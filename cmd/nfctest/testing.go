@@ -160,59 +160,59 @@ func (t *Testing) testNTAGTag(tag pn532.Tag, mode TestMode) error {
 }
 
 // testNTAGCapabilityContainer tests reading the NTAG capability container
-func (t *Testing) testNTAGCapabilityContainer(ntagTag *pn532.NTAGTag) error {
-	fmt.Print("   Reading capability container...")
+func (*Testing) testNTAGCapabilityContainer(ntagTag *pn532.NTAGTag) error {
+	_, _ = fmt.Print("   Reading capability container...")
 	_, err := ntagTag.ReadBlock(3)
 	if err != nil {
-		fmt.Printf(" ERROR: Failed: %v\n", err)
+		_, _ = fmt.Printf(" ERROR: Failed: %v\n", err)
 		return fmt.Errorf("failed to read capability container: %w", err)
 	}
-	fmt.Print(" OK\n")
+	_, _ = fmt.Print(" OK\n")
 	return nil
 }
 
 // testNTAGNDEF tests reading NDEF data
 func (t *Testing) testNTAGNDEF(ntagTag *pn532.NTAGTag) {
-	fmt.Print("   TESTING: Reading NDEF data...")
+	_, _ = fmt.Print("   TESTING: Reading NDEF data...")
 	ndef, err := ntagTag.ReadNDEF()
 	t.output.NDEFResults(ndef, err)
 }
 
 // testNTAGWriteCapability tests write operations
-func (t *Testing) testNTAGWriteCapability(ntagTag *pn532.NTAGTag) {
-	fmt.Print("   TEXT: Testing write capability...")
+func (*Testing) testNTAGWriteCapability(ntagTag *pn532.NTAGTag) {
+	_, _ = fmt.Print("   TEXT: Testing write capability...")
 
 	originalData, readErr := ntagTag.ReadBlock(4)
 	if readErr != nil {
-		fmt.Print(" WARNING: Cannot read block for write test\n")
+		_, _ = fmt.Print(" WARNING: Cannot read block for write test\n")
 		return
 	}
 
 	testData := []byte("TEST")
 	writeErr := ntagTag.WriteBlock(4, testData)
 	if writeErr != nil {
-		fmt.Printf(" ERROR: Write failed: %v\n", writeErr)
+		_, _ = fmt.Printf(" ERROR: Write failed: %v\n", writeErr)
 		return
 	}
 
 	restoreErr := ntagTag.WriteBlock(4, originalData)
 	if restoreErr != nil {
-		fmt.Printf(" WARNING: Write successful but failed to restore: %v\n", restoreErr)
+		_, _ = fmt.Printf(" WARNING: Write successful but failed to restore: %v\n", restoreErr)
 	} else {
-		fmt.Print(" OK\n")
+		_, _ = fmt.Print(" OK\n")
 	}
 }
 
 // testNTAGStress performs stress testing on NTAG
-func (t *Testing) testNTAGStress(ntagTag *pn532.NTAGTag) {
-	fmt.Print("   STRESS: Stress test (10 rapid reads)...")
+func (*Testing) testNTAGStress(ntagTag *pn532.NTAGTag) {
+	_, _ = fmt.Print("   STRESS: Stress test (10 rapid reads)...")
 	success := 0
 	for i := 0; i < 10; i++ {
 		if _, err := ntagTag.ReadBlock(0); err == nil {
 			success++
 		}
 	}
-	fmt.Printf(" OK: %d/10 succeeded\n", success)
+	_, _ = fmt.Printf(" OK: %d/10 succeeded\n", success)
 }
 
 // testMIFARETag tests MIFARE-specific operations
@@ -223,7 +223,7 @@ func (t *Testing) testMIFARETag(tag pn532.Tag, mode TestMode) error {
 	}
 
 	// Try to read NDEF data (library handles authentication automatically)
-	fmt.Print("   TESTING: Reading NDEF data...")
+	_, _ = fmt.Print("   TESTING: Reading NDEF data...")
 	ndef, err := mifareTag.ReadNDEF()
 	t.output.NDEFResults(ndef, err)
 
@@ -235,9 +235,9 @@ func (t *Testing) testMIFARETag(tag pn532.Tag, mode TestMode) error {
 }
 
 // testMifareManufacturerBlock tests manufacturer block access with default keys
-func (t *Testing) testMifareManufacturerBlock(mifareTag *pn532.MIFARETag) {
+func (*Testing) testMifareManufacturerBlock(mifareTag *pn532.MIFARETag) {
 	// Additional MIFARE tests - try to read manufacturer block with basic auth
-	fmt.Print("   Testing manufacturer block access...")
+	_, _ = fmt.Print("   Testing manufacturer block access...")
 
 	// Try common default keys for sector 0 (manufacturer data)
 	defaultKeys := [][]byte{
@@ -258,16 +258,16 @@ func (t *Testing) testMifareManufacturerBlock(mifareTag *pn532.MIFARETag) {
 	}
 
 	if accessed {
-		fmt.Print(" OK: Accessible with default keys\n")
+		_, _ = fmt.Print(" OK: Accessible with default keys\n")
 	} else {
-		fmt.Print(" WARNING: Uses custom keys (normal for field cards)\n")
+		_, _ = fmt.Print(" WARNING: Uses custom keys (normal for field cards)\n")
 	}
 }
 
 // testFeliCaTag tests FeliCa-specific operations
-func (t *Testing) testFeliCaTag(_ pn532.Tag, _ TestMode) error {
-	fmt.Print("   TESTING: FeliCa tag detected...")
+func (*Testing) testFeliCaTag(_ pn532.Tag, _ TestMode) error {
+	_, _ = fmt.Print("   TESTING: FeliCa tag detected...")
 	// FeliCa-specific tests would go here
-	fmt.Print(" WARNING: FeliCa testing not yet implemented\n")
+	_, _ = fmt.Print(" WARNING: FeliCa testing not yet implemented\n")
 	return nil
 }

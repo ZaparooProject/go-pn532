@@ -41,38 +41,38 @@ func NewOutput(verbose bool) *Output {
 // ReaderTestHeader prints the appropriate header for reader testing
 func (o *Output) ReaderTestHeader(reader detection.DeviceInfo) {
 	if o.verbose {
-		fmt.Printf("Testing reader: %s\n", reader.String())
+		_, _ = fmt.Printf("Testing reader: %s\n", reader.String())
 	} else {
-		fmt.Printf("Testing %s reader at %s... ", reader.Transport, reader.Path)
+		_, _ = fmt.Printf("Testing %s reader at %s... ", reader.Transport, reader.Path)
 	}
 }
 
 // TestFailure prints failure indicator for non-verbose mode
 func (o *Output) TestFailure() {
 	if !o.verbose {
-		fmt.Print("FAIL\n")
+		_, _ = fmt.Print("FAIL\n")
 	}
 }
 
 // TestSuccess prints success message with firmware version
 func (o *Output) TestSuccess(reader detection.DeviceInfo, version *pn532.FirmwareVersion) {
 	if o.verbose {
-		fmt.Printf("   OK: Firmware: %s\n", version.Version)
-		fmt.Printf("   OK: Device: %s\n", reader.Path)
+		_, _ = fmt.Printf("   OK: Firmware: %s\n", version.Version)
+		_, _ = fmt.Printf("   OK: Device: %s\n", reader.Path)
 	} else {
-		fmt.Printf("OK: (firmware v%s)\n", version.Version)
+		_, _ = fmt.Printf("OK: (firmware v%s)\n", version.Version)
 	}
 }
 
 // NewCardDetected prints message for newly detected card
-func (o *Output) NewCardDetected(readerPath, cardType, currentUID string) {
-	fmt.Printf("\nCARD: Card detected on %s: %s (UID: %s)\n",
+func (*Output) NewCardDetected(readerPath, cardType, currentUID string) {
+	_, _ = fmt.Printf("\nCARD: Card detected on %s: %s (UID: %s)\n",
 		readerPath, cardType, currentUID)
 }
 
 // DifferentCardDetected prints message for different card detected
-func (o *Output) DifferentCardDetected(readerPath, cardType, currentUID string) {
-	fmt.Printf("\nCARD: New card detected on %s: %s (UID: %s)\n",
+func (*Output) DifferentCardDetected(readerPath, cardType, currentUID string) {
+	_, _ = fmt.Printf("\nCARD: New card detected on %s: %s (UID: %s)\n",
 		readerPath, cardType, currentUID)
 }
 
@@ -84,60 +84,60 @@ func (o *Output) NDEFResults(ndef *pn532.NDEFMessage, err error) {
 	}
 
 	// Get NDEF record count for display
-	fmt.Printf(" OK: Found %d record(s)\n", len(ndef.Records))
+	_, _ = fmt.Printf(" OK: Found %d record(s)\n", len(ndef.Records))
 	// Always show NDEF content, not just in verbose mode
 	for i, record := range ndef.Records {
 		o.ndefRecord(i, &record)
 	}
 }
 
-func (o *Output) ndefError(err error) {
+func (*Output) ndefError(err error) {
 	if errors.Is(err, pn532.ErrNoNDEF) {
-		fmt.Print(" WARNING: No NDEF data\n")
+		_, _ = fmt.Print(" WARNING: No NDEF data\n")
 	} else {
-		fmt.Printf(" ERROR: Failed: %v\n", err)
+		_, _ = fmt.Printf(" ERROR: Failed: %v\n", err)
 	}
 }
 
-func (o *Output) ndefRecord(i int, record *pn532.NDEFRecord) {
-	fmt.Printf("      Record %d: Type=%s\n", i, record.Type)
+func (*Output) ndefRecord(i int, record *pn532.NDEFRecord) {
+	_, _ = fmt.Printf("      Record %d: Type=%s\n", i, record.Type)
 	if record.Text != "" {
-		fmt.Printf("        TEXT: %s\n", record.Text)
+		_, _ = fmt.Printf("        TEXT: %s\n", record.Text)
 	}
 	if record.URI != "" {
-		fmt.Printf("        URI: %s\n", record.URI)
+		_, _ = fmt.Printf("        URI: %s\n", record.URI)
 	}
 	if record.WiFi != nil {
-		fmt.Printf("        WiFi: %s\n", record.WiFi.SSID)
+		_, _ = fmt.Printf("        WiFi: %s\n", record.WiFi.SSID)
 	}
 	if record.VCard != nil {
-		fmt.Printf("        VCard: %s\n", record.VCard.FormattedName)
+		_, _ = fmt.Printf("        VCard: %s\n", record.VCard.FormattedName)
 	}
 }
 
 // Error prints an error message
-func (o *Output) Error(format string, args ...interface{}) {
-	fmt.Printf("ERROR: "+format+"\n", args...)
+func (*Output) Error(format string, args ...any) {
+	_, _ = fmt.Printf("ERROR: "+format+"\n", args...)
 }
 
 // Warning prints a warning message
-func (o *Output) Warning(format string, args ...interface{}) {
-	fmt.Printf("WARNING: "+format+"\n", args...)
+func (*Output) Warning(format string, args ...any) {
+	_, _ = fmt.Printf("WARNING: "+format+"\n", args...)
 }
 
 // Info prints an info message
-func (o *Output) Info(format string, args ...interface{}) {
-	fmt.Printf("INFO: "+format+"\n", args...)
+func (*Output) Info(format string, args ...any) {
+	_, _ = fmt.Printf("INFO: "+format+"\n", args...)
 }
 
 // OK prints a success message
-func (o *Output) OK(format string, args ...interface{}) {
-	fmt.Printf("OK: "+format+"\n", args...)
+func (*Output) OK(format string, args ...any) {
+	_, _ = fmt.Printf("OK: "+format+"\n", args...)
 }
 
 // Verbose prints only if verbose mode is enabled
-func (o *Output) Verbose(format string, args ...interface{}) {
+func (o *Output) Verbose(format string, args ...any) {
 	if o.verbose {
-		fmt.Printf(format+"\n", args...)
+		_, _ = fmt.Printf(format+"\n", args...)
 	}
 }

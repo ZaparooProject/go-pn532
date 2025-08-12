@@ -51,8 +51,8 @@ func NewModes(config *Config, output *Output, discovery *Discovery, monitoring *
 
 // RunComprehensive runs full testing of readers and cards
 func (m *Modes) RunComprehensive(ctx context.Context) error {
-	fmt.Println("NFC Test Tool - Comprehensive Mode")
-	fmt.Println("=====================================")
+	_, _ = fmt.Println("NFC Test Tool - Comprehensive Mode")
+	_, _ = fmt.Println("=====================================")
 
 	// Discover readers
 	readers, err := m.discovery.DiscoverReaders(ctx)
@@ -78,8 +78,8 @@ func (m *Modes) RunComprehensive(ctx context.Context) error {
 
 // RunQuick runs lighter, faster testing cycles
 func (m *Modes) RunQuick(ctx context.Context) error {
-	fmt.Println("NFC Test Tool - Quick Mode")
-	fmt.Println("=============================")
+	_, _ = fmt.Println("NFC Test Tool - Quick Mode")
+	_, _ = fmt.Println("=============================")
 
 	// Discover readers with shorter timeout
 	quickCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -108,10 +108,10 @@ func (m *Modes) RunQuick(ctx context.Context) error {
 
 // RunVendorTest runs continuous operation for testing readers being sold
 func (m *Modes) RunVendorTest(ctx context.Context) error {
-	fmt.Println("NFC Test Tool - Vendor Test Mode")
-	fmt.Println("=================================")
-	fmt.Println("Continuous monitoring for readers and cards...")
-	fmt.Println("   (Ctrl+C to quit)")
+	_, _ = fmt.Println("NFC Test Tool - Vendor Test Mode")
+	_, _ = fmt.Println("=================================")
+	_, _ = fmt.Println("Continuous monitoring for readers and cards...")
+	_, _ = fmt.Println("   (Ctrl+C to quit)")
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -135,11 +135,13 @@ func (m *Modes) RunVendorTest(ctx context.Context) error {
 }
 
 // processReaderChanges handles reader connection/disconnection changes
-func (m *Modes) processReaderChanges(ctx context.Context, lastReaders, readers []detection.DeviceInfo) []detection.DeviceInfo {
+func (m *Modes) processReaderChanges(
+	ctx context.Context, lastReaders, readers []detection.DeviceInfo,
+) []detection.DeviceInfo {
 	// Check for new readers
 	newReaders := m.discovery.FindNewReaders(lastReaders, readers)
 	for _, reader := range newReaders {
-		fmt.Printf("New reader detected: %s\n", reader.String())
+		_, _ = fmt.Printf("New reader detected: %s\n", reader.String())
 		if err := m.testing.TestReader(ctx, reader, TestMode{Quick: true}); err != nil {
 			m.output.Error("Reader test failed: %v", err)
 		} else {
@@ -150,7 +152,7 @@ func (m *Modes) processReaderChanges(ctx context.Context, lastReaders, readers [
 	// Check for disconnected readers
 	disconnected := m.discovery.FindDisconnectedReaders(lastReaders, readers)
 	for _, reader := range disconnected {
-		fmt.Printf("Reader disconnected: %s\n", reader.String())
+		_, _ = fmt.Printf("Reader disconnected: %s\n", reader.String())
 	}
 
 	// Quick card check on all readers

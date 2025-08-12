@@ -76,7 +76,7 @@ func run() int {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Print("\nShutting down gracefully...\n")
+		_, _ = fmt.Print("\nShutting down gracefully...\n")
 		cancel()
 	}()
 
