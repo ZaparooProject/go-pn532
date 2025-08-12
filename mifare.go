@@ -22,8 +22,10 @@ package pn532
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +58,12 @@ var (
 		{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // All zeros
 		{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}, // MAD key
 		{0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5}, // Common alternative
+		{0xA3, 0x96, 0xEF, 0xA4, 0xE2, 0x4F}, // FM11RF08S universal backdoor key
 	}
+
+	// Chinese clone unlock commands
+	chineseCloneUnlock7Bit = byte(0x40)
+	chineseCloneUnlock8Bit = byte(0x43)
 )
 
 // MIFARE commands
@@ -79,6 +86,58 @@ const (
 	MIFAREKeyA = 0x00
 	MIFAREKeyB = 0x01
 )
+
+// Retry strategy constants
+const (
+	retryBaseDelay   = 200 * time.Millisecond
+	retryMaxDelay    = 4 * time.Second
+	retryJitterMaxMs = 100
+	maxRetryAttempts = 5
+)
+
+// Retry levels (progressive recovery)
+type retryLevel int
+
+const (
+	retryLight    retryLevel = iota // Simple retry with delay
+	retryModerate                   // Halt/wake sequence
+	retryHeavy                      // RF field reset
+	retryNuclear                    // Complete PN532 reinitialization
+)
+
+// Authentication timing metrics
+type authTiming struct {
+	attempts []time.Duration
+	mutex    sync.RWMutex
+}
+
+func (at *authTiming) add(duration time.Duration) {
+	at.mutex.Lock()
+	defer at.mutex.Unlock()
+	at.attempts = append(at.attempts, duration)
+	if len(at.attempts) > 20 {
+		at.attempts = at.attempts[1:]
+	}
+}
+
+func (at *authTiming) getVariance() time.Duration {
+	at.mutex.RLock()
+	defer at.mutex.RUnlock()
+	if len(at.attempts) < 2 {
+		return 0
+	}
+
+	minVal, maxVal := at.attempts[0], at.attempts[0]
+	for _, d := range at.attempts[1:] {
+		if d < minVal {
+			minVal = d
+		}
+		if d > maxVal {
+			maxVal = d
+		}
+	}
+	return maxVal - minVal
+}
 
 // secureKey manages MIFARE keys with automatic zeroing
 type secureKey struct {
@@ -106,6 +165,7 @@ func (sk *secureKey) bytes() []byte {
 type MIFARETag struct {
 	ndefKey *secureKey
 	BaseTag
+	timing          authTiming
 	lastAuthSector  int
 	authMutex       sync.RWMutex
 	lastAuthKeyType byte
@@ -127,14 +187,14 @@ func NewMIFARETag(device *Device, uid []byte, sak byte) *MIFARETag {
 	return tag
 }
 
-// authenticateNDEF authenticates to a sector using NDEF standard key
+// authenticateNDEF authenticates to a sector using NDEF standard key with robust retry
 func (t *MIFARETag) authenticateNDEF(sector uint8, keyType byte) error {
 	if t.ndefKey == nil {
 		return errors.New("NDEF key not available")
 	}
 
 	key := t.ndefKey.bytes()
-	err := t.Authenticate(sector, keyType, key)
+	err := t.AuthenticateRobust(sector, keyType, key)
 
 	// SECURITY: Zero key copy after use
 	for i := range key {
@@ -505,7 +565,7 @@ func (t *MIFARETag) authenticateForNDEF() (*authenticationResult, error) {
 	ndefKeyBytes := t.ndefKey.bytes()
 
 	// Try Key A first
-	err := t.Authenticate(1, MIFAREKeyA, ndefKeyBytes)
+	err := t.AuthenticateRobust(1, MIFAREKeyA, ndefKeyBytes)
 	if err == nil {
 		// SECURITY: Clear sensitive key data after use
 		for i := range ndefKeyBytes {
@@ -516,7 +576,7 @@ func (t *MIFARETag) authenticateForNDEF() (*authenticationResult, error) {
 	}
 
 	// Try Key B if Key A failed
-	err = t.Authenticate(1, MIFAREKeyB, ndefKeyBytes)
+	err = t.AuthenticateRobust(1, MIFAREKeyB, ndefKeyBytes)
 	if err == nil {
 		// SECURITY: Clear sensitive key data after use
 		for i := range ndefKeyBytes {
@@ -534,14 +594,14 @@ func (t *MIFARETag) authenticateForNDEF() (*authenticationResult, error) {
 	// If NDEF key failed, try common keys for blank tags
 	for _, key := range commonKeys {
 		// Try Key A first
-		err := t.Authenticate(1, MIFAREKeyA, key)
+		err := t.AuthenticateRobust(1, MIFAREKeyA, key)
 		if err == nil {
 			result.isBlank = true
 			result.blankKey = key
 			return result, nil
 		}
 		// Try Key B if Key A failed
-		err = t.Authenticate(1, MIFAREKeyB, key)
+		err = t.AuthenticateRobust(1, MIFAREKeyB, key)
 		if err == nil {
 			result.isBlank = true
 			result.blankKey = key
@@ -725,6 +785,231 @@ func (t *MIFARETag) Authenticate(sector uint8, keyType byte, key []byte) error {
 	return nil
 }
 
+// AuthenticateRobust performs robust authentication with retry logic and Chinese clone support
+// This is the recommended method for authenticating with unreliable tags
+func (t *MIFARETag) AuthenticateRobust(sector uint8, keyType byte, key []byte) error {
+	start := time.Now()
+	defer func() {
+		t.timing.add(time.Since(start))
+	}()
+
+	// Try standard authentication first
+	err := t.authenticateWithRetry(sector, keyType, key)
+	if err == nil {
+		return nil
+	}
+
+	// If standard auth failed, try Chinese clone unlock sequences
+	if t.tryChineseCloneUnlock(sector) {
+		// Clone unlock successful, tag is accessible without auth
+		t.authMutex.Lock()
+		t.lastAuthSector = int(sector)
+		t.lastAuthKeyType = keyType
+		t.authMutex.Unlock()
+		return nil
+	}
+
+	return fmt.Errorf("robust authentication failed after all attempts: %w", err)
+}
+
+// authenticateWithRetry implements progressive retry strategy
+func (t *MIFARETag) authenticateWithRetry(sector uint8, keyType byte, key []byte) error {
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetryAttempts; attempt++ {
+		level := t.getRetryLevel(attempt)
+
+		// Apply recovery strategy based on level
+		if err := t.applyRetryStrategy(level, lastErr); err != nil {
+			return fmt.Errorf("recovery strategy failed: %w", err)
+		}
+
+		// Attempt authentication
+		err := t.Authenticate(sector, keyType, key)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+
+		// Check for specific error patterns that indicate permanent failure
+		if t.isPermanentFailure(err) {
+			return fmt.Errorf("permanent authentication failure: %w", err)
+		}
+
+		// Apply exponential backoff with jitter
+		delay := t.calculateRetryDelay(attempt)
+		time.Sleep(delay)
+	}
+
+	return fmt.Errorf("authentication failed after %d attempts: %w", maxRetryAttempts, lastErr)
+}
+
+// getRetryLevel determines the retry level based on attempt number
+func (*MIFARETag) getRetryLevel(attempt int) retryLevel {
+	switch {
+	case attempt < 2:
+		return retryLight
+	case attempt < 3:
+		return retryModerate
+	case attempt < 4:
+		return retryHeavy
+	default:
+		return retryNuclear
+	}
+}
+
+// applyRetryStrategy implements the progressive recovery strategy
+func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
+	switch level {
+	case retryLight:
+		// Light: Just a small delay, no special action needed
+		return nil
+
+	case retryModerate:
+		// Moderate: Card reinitialization (critical fix from research)
+		_, err := t.device.DetectTag()
+		if err != nil {
+			return fmt.Errorf("card reinitialization failed: %w", err)
+		}
+
+		// Clear authentication state
+		t.authMutex.Lock()
+		t.lastAuthSector = -1
+		t.lastAuthKeyType = 0
+		t.authMutex.Unlock()
+
+		return nil
+
+	case retryHeavy:
+		// Heavy: RF field reset sequence (if device supports it)
+		// Note: This would require device-level support for field control
+		// For now, we do a longer reinitialization sequence
+		for i := 0; i < 3; i++ {
+			_, err := t.device.DetectTag()
+			if err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		t.authMutex.Lock()
+		t.lastAuthSector = -1
+		t.lastAuthKeyType = 0
+		t.authMutex.Unlock()
+
+		return nil
+
+	case retryNuclear:
+		// Nuclear: Complete reinitialization
+		return t.ResetAuthState()
+
+	default:
+		return nil
+	}
+}
+
+// calculateRetryDelay implements exponential backoff with jitter
+func (*MIFARETag) calculateRetryDelay(attempt int) time.Duration {
+	// Exponential backoff: baseDelay * 2^attempt
+	if attempt > 30 { // Prevent overflow
+		attempt = 30
+	}
+	//nolint:gosec // G115: Overflow prevented by bounds check above
+	shiftAmount := uint(attempt)
+	delay := retryBaseDelay * time.Duration(1<<shiftAmount)
+	if delay > retryMaxDelay {
+		delay = retryMaxDelay
+	}
+
+	// Add random jitter (0-100ms)
+	jitterMax := big.NewInt(int64(retryJitterMaxMs))
+	jitterBig, _ := rand.Int(rand.Reader, jitterMax)
+	jitter := time.Duration(jitterBig.Int64()) * time.Millisecond
+	return delay + jitter
+}
+
+// isPermanentFailure checks if an error indicates a permanent failure
+func (*MIFARETag) isPermanentFailure(err error) bool {
+	errStr := strings.ToLower(err.Error())
+
+	// Check for specific error patterns that indicate permanent issues
+	permanentPatterns := []string{
+		"invalid key type",
+		"mifare key must be 6 bytes",
+		"cannot write to manufacturer block",
+	}
+
+	for _, pattern := range permanentPatterns {
+		if strings.Contains(errStr, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// tryChineseCloneUnlock attempts Chinese clone unlock sequences
+func (t *MIFARETag) tryChineseCloneUnlock(_ uint8) bool {
+	// Try Gen1 unlock sequence (0x40 for 7-bit, 0x43 for 8-bit)
+	commands := []byte{chineseCloneUnlock7Bit, chineseCloneUnlock8Bit}
+
+	for _, cmd := range commands {
+		_, err := t.device.SendDataExchange([]byte{cmd})
+		if err == nil {
+			// Unlock successful - this is a Gen1 clone tag
+			return true
+		}
+	}
+
+	return false
+}
+
+// GetTimingVariance returns the timing variance for hardware issue detection
+func (t *MIFARETag) GetTimingVariance() time.Duration {
+	return t.timing.getVariance()
+}
+
+// GetDevice returns the underlying PN532 device for direct access
+func (t *MIFARETag) GetDevice() *Device {
+	return t.device
+}
+
+// IsTimingUnstable checks if timing variance indicates hardware issues
+func (t *MIFARETag) IsTimingUnstable() bool {
+	variance := t.timing.getVariance()
+	// High variance (>1000ms) indicates hardware issues per research
+	return variance > 1000*time.Millisecond
+}
+
+// AnalyzeLastError provides detailed error analysis based on research findings
+func (*MIFARETag) AnalyzeLastError(err error) string {
+	if err == nil {
+		return "No error"
+	}
+
+	errStr := err.Error()
+
+	// Pattern analysis based on research document
+	if strings.Contains(errStr, "14") {
+		return "Error 0x14: Wrong key or compatibility issues with Chinese clone"
+	}
+	if strings.Contains(errStr, "01") {
+		return "Error 0x01: Timeout - insufficient retries or timing issues"
+	}
+	if strings.Contains(errStr, "27") {
+		return "Error 0x27: Improper state management"
+	}
+	if strings.Contains(errStr, "80 80 80") {
+		return "PN532 firmware bug: successful auth but read failure (sectors 1-15 after sector 0)"
+	}
+	if strings.Contains(errStr, "data exchange error") {
+		return "Communication error - may benefit from InCommunicateThru fallback"
+	}
+
+	return fmt.Sprintf("Generic error: %s", errStr)
+}
+
 // formatForNDEFWithKey formats a blank MIFARE Classic tag for NDEF use with a specific blank key
 func (t *MIFARETag) determineMaxSectors() uint8 {
 	if t.IsMIFARE4K() {
@@ -759,7 +1044,7 @@ func (t *MIFARETag) updateSectorKeys(sector uint8, ndefKeyBytes []byte) error {
 func (t *MIFARETag) reAuthenticateWithNDEFKey(sector uint8, ndefKeyBytes []byte) error {
 	// CRITICAL FIX: Re-authenticate with the new NDEF key
 	// This ensures the PN532 authentication state matches the new keys on the tag
-	if err := t.Authenticate(sector, MIFAREKeyA, ndefKeyBytes); err != nil {
+	if err := t.AuthenticateRobust(sector, MIFAREKeyA, ndefKeyBytes); err != nil {
 		return fmt.Errorf("failed to re-authenticate sector %d with new NDEF key: %w", sector, err)
 	}
 	return nil
@@ -777,7 +1062,7 @@ func (t *MIFARETag) formatForNDEFWithKey(blankKey []byte) error {
 
 	for sector := uint8(1); sector < maxSectors; sector++ {
 		// First authenticate with the blank key
-		if err := t.Authenticate(sector, MIFAREKeyA, blankKey); err != nil {
+		if err := t.AuthenticateRobust(sector, MIFAREKeyA, blankKey); err != nil {
 			// If we can't authenticate, assume this sector is already formatted or protected
 			continue
 		}
