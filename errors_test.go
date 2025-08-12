@@ -335,19 +335,19 @@ func TestNewTransportError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			te := NewTransportError(tt.op, tt.port, tt.err, tt.errType)
+			transportErr := NewTransportError(tt.op, tt.port, tt.err, tt.errType)
 
-			if te.Op != tt.op {
-				t.Errorf("Op = %q, want %q", te.Op, tt.op)
+			if transportErr.Op != tt.op {
+				t.Errorf("Op = %q, want %q", transportErr.Op, tt.op)
 			}
-			if te.Port != tt.port {
-				t.Errorf("Port = %q, want %q", te.Port, tt.port)
+			if transportErr.Port != tt.port {
+				t.Errorf("Port = %q, want %q", transportErr.Port, tt.port)
 			}
-			if !errors.Is(te.Err, tt.err) {
-				t.Errorf("Err = %v, want %v", te.Err, tt.err)
+			if !errors.Is(transportErr.Err, tt.err) {
+				t.Errorf("Err = %v, want %v", transportErr.Err, tt.err)
 			}
-			if te.Type != tt.errType {
-				t.Errorf("Type = %v, want %v", te.Type, tt.errType)
+			if transportErr.Type != tt.errType {
+				t.Errorf("Type = %v, want %v", transportErr.Type, tt.errType)
 			}
 		})
 	}
@@ -396,13 +396,13 @@ func TestTransportError_Error(t *testing.T) {
 func TestTransportError_Unwrap(t *testing.T) {
 	t.Parallel()
 	originalErr := errors.New("original error")
-	te := &TransportError{
+	transportErr := &TransportError{
 		Err:  originalErr,
 		Op:   "test",
 		Port: "/dev/test",
 	}
 
-	unwrapped := te.Unwrap()
+	unwrapped := transportErr.Unwrap()
 	if !errors.Is(unwrapped, originalErr) {
 		t.Errorf("Unwrap() = %v, want %v", unwrapped, originalErr)
 	}

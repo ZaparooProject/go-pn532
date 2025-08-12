@@ -567,8 +567,8 @@ func (d *Device) convertAutoPollResults(
 	_ context.Context, results []AutoPollResult, maxTags byte,
 ) ([]*DetectedTag, error) {
 	tags := make([]*DetectedTag, 0, len(results))
-	for i, result := range results {
-		if i >= int(maxTags) {
+	for index, result := range results {
+		if index >= int(maxTags) {
 			break // Respect maxTags limit
 		}
 
@@ -584,7 +584,7 @@ func (d *Device) convertAutoPollResults(
 			UIDBytes:       uid,
 			ATQ:            atq,
 			SAK:            sak,
-			TargetNumber:   d.getTargetNumber(i), // Use appropriate target number
+			TargetNumber:   d.getTargetNumber(index), // Use appropriate target number
 			DetectedAt:     time.Now(),
 			TargetData:     result.TargetData, // Store full target data for FeliCa
 			FromInAutoPoll: true,              // Mark as from InAutoPoll to skip InSelect

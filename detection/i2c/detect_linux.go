@@ -152,7 +152,7 @@ func findI2CBuses() ([]i2cBusInfo, error) {
 		}
 
 		// Try to open to verify it's a valid I2C device
-		fd, err := syscall.Open(path, syscall.O_RDWR, 0)
+		fileDescriptor, err := syscall.Open(path, syscall.O_RDWR, 0)
 		if err != nil {
 			continue
 		}
@@ -160,11 +160,11 @@ func findI2CBuses() ([]i2cBusInfo, error) {
 		// Check I2C functionality
 		var funcs uint32
 		// #nosec G103 -- unsafe pointer required for ioctl system call
-		if err := ioctl(fd, I2CFuncs, uintptr(unsafe.Pointer(&funcs))); err != nil {
-			_ = syscall.Close(fd)
+		if err := ioctl(fileDescriptor, I2CFuncs, uintptr(unsafe.Pointer(&funcs))); err != nil {
+			_ = syscall.Close(fileDescriptor)
 			continue
 		}
-		_ = syscall.Close(fd)
+		_ = syscall.Close(fileDescriptor)
 
 		// Check if it supports I2C
 		if funcs&I2CFuncI2C == 0 {
@@ -185,23 +185,23 @@ func scanI2CBus(busPath string) []uint8 {
 	var devices []uint8
 
 	// Open I2C bus
-	fd, err := syscall.Open(busPath, syscall.O_RDWR, 0)
+	fileDescriptor, err := syscall.Open(busPath, syscall.O_RDWR, 0)
 	if err != nil {
 		return devices
 	}
-	defer func() { _ = syscall.Close(fd) }()
+	defer func() { _ = syscall.Close(fileDescriptor) }()
 
 	// Scan common I2C addresses (0x08 to 0x77)
 	// Skip reserved addresses
 	for addr := uint8(0x08); addr <= 0x77; addr++ {
 		// Set slave address
-		if err := ioctl(fd, I2CSlave, uintptr(addr)); err != nil {
+		if err := ioctl(fileDescriptor, I2CSlave, uintptr(addr)); err != nil {
 			continue
 		}
 
 		// Try to read one byte
 		buf := make([]byte, 1)
-		if _, err := syscall.Read(fd, buf); err == nil {
+		if _, err := syscall.Read(fileDescriptor, buf); err == nil {
 			devices = append(devices, addr)
 		}
 	}

@@ -27,14 +27,16 @@ import (
 // ValidateFrameLength validates the frame length field and length checksum
 // Returns the validated frame length and whether a retry is needed (NACK should be sent)
 // This consolidates the validateFrameLength logic from UART and I2C transports
-func ValidateFrameLength(buf []byte, off, totalLen int, op, port string) (frameLen int, shouldRetry bool, err error) {
+func ValidateFrameLength(
+	buf []byte, off, totalLen int, operation, port string,
+) (frameLen int, shouldRetry bool, err error) {
 	// Increment offset to point to length byte (matching original behavior)
 	off++
 
 	// Check we have enough bytes for length and length checksum
 	if off+1 >= totalLen {
 		return 0, false, &pn532.TransportError{
-			Op:        op,
+			Op:        operation,
 			Port:      port,
 			Err:       pn532.ErrFrameCorrupted,
 			Type:      pn532.ErrorTypeTransient,

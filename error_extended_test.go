@@ -213,14 +213,14 @@ func TestErrorChainRetryability(t *testing.T) {
 		{
 			name: "transport error in chain",
 			errorChain: func() error {
-				te := &TransportError{
+				transportErr := &TransportError{
 					Err:       ErrTransportTimeout,
 					Op:        "read",
 					Port:      "/dev/ttyUSB0",
 					Type:      ErrorTypeTimeout,
 					Retryable: true,
 				}
-				return fmt.Errorf("device error: %w", te)
+				return fmt.Errorf("device error: %w", transportErr)
 			},
 			wantRetryable: true,
 		},

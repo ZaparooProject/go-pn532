@@ -113,30 +113,30 @@ func getAutoPollTestCases() []autoPollTestCase {
 	}
 }
 
-func verifyDetectedTag(t *testing.T, detected *DetectedTag, tc *autoPollTestCase) {
+func verifyDetectedTag(t *testing.T, detected *DetectedTag, testCase *autoPollTestCase) {
 	if detected == nil {
 		t.Fatal("ToDetectedTag returned nil")
 	}
 
-	verifyBasicFields(t, detected, tc)
-	verifyInAutoPollFields(t, detected, tc)
+	verifyBasicFields(t, detected, testCase)
+	verifyInAutoPollFields(t, detected, testCase)
 }
 
-func verifyBasicFields(t *testing.T, detected *DetectedTag, tc *autoPollTestCase) {
-	if detected.Type != tc.expectedType {
-		t.Errorf("Expected Type %s, got %s", tc.expectedType, detected.Type)
+func verifyBasicFields(t *testing.T, detected *DetectedTag, testCase *autoPollTestCase) {
+	if detected.Type != testCase.expectedType {
+		t.Errorf("Expected Type %s, got %s", testCase.expectedType, detected.Type)
 	}
 
-	if detected.UID != tc.expectedUID {
-		t.Errorf("Expected UID %s, got %s", tc.expectedUID, detected.UID)
+	if detected.UID != testCase.expectedUID {
+		t.Errorf("Expected UID %s, got %s", testCase.expectedUID, detected.UID)
 	}
 
-	if len(detected.UIDBytes) != tc.expectedLength {
-		t.Errorf("Expected UIDBytes length %d, got %d", tc.expectedLength, len(detected.UIDBytes))
+	if len(detected.UIDBytes) != testCase.expectedLength {
+		t.Errorf("Expected UIDBytes length %d, got %d", testCase.expectedLength, len(detected.UIDBytes))
 	}
 }
 
-func verifyInAutoPollFields(t *testing.T, detected *DetectedTag, tc *autoPollTestCase) {
+func verifyInAutoPollFields(t *testing.T, detected *DetectedTag, testCase *autoPollTestCase) {
 	if !detected.FromInAutoPoll {
 		t.Error("Expected FromInAutoPoll to be true")
 	}
@@ -145,9 +145,9 @@ func verifyInAutoPollFields(t *testing.T, detected *DetectedTag, tc *autoPollTes
 		t.Errorf("Expected TargetNumber 1, got %d", detected.TargetNumber)
 	}
 
-	if len(detected.TargetData) != len(tc.result.TargetData) {
+	if len(detected.TargetData) != len(testCase.result.TargetData) {
 		t.Errorf("Expected TargetData length %d, got %d",
-			len(tc.result.TargetData), len(detected.TargetData))
+			len(testCase.result.TargetData), len(detected.TargetData))
 	}
 
 	if detected.DetectedAt.IsZero() {
