@@ -50,7 +50,7 @@ func NewMonitoring(config *Config, output *Output, discovery *Discovery, testing
 
 // MonitorCards continuously monitors for cards using proper InAutoPoll continuous polling
 func (m *Monitoring) MonitorCards(ctx context.Context, readers []detection.DeviceInfo, isQuick bool) error {
-	fmt.Println("\nMonitoring for cards... (Ctrl+C to quit)")
+	_, _ = fmt.Println("\nMonitoring for cards... (Ctrl+C to quit)")
 
 	setup, err := m.initializeDevices(readers)
 	if err != nil {
@@ -148,7 +148,9 @@ func (m *Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringS
 }
 
 // continuousPolling runs continuous InAutoPoll monitoring for a single reader
-func (m *Monitoring) continuousPolling(ctx context.Context, device *pn532.Device, readerPath string, state *CardState, isQuick bool) error {
+func (m *Monitoring) continuousPolling(
+	ctx context.Context, device *pn532.Device, readerPath string, state *CardState, isQuick bool,
+) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -173,7 +175,7 @@ func (m *Monitoring) continuousPolling(ctx context.Context, device *pn532.Device
 }
 
 // performSinglePoll performs a single tag detection cycle using the sophisticated strategy system
-func (m *Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device) (*pn532.DetectedTag, error) {
+func (*Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device) (*pn532.DetectedTag, error) {
 	// Use short timeout for responsive card removal detection
 	pollCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
@@ -212,7 +214,7 @@ func (m *Monitoring) handleCardRemoval(state *CardState, readerPath string) {
 }
 
 // resetCardState resets the card state to empty
-func (m *Monitoring) resetCardState(state *CardState) {
+func (*Monitoring) resetCardState(state *CardState) {
 	state.Present = false
 	state.LastUID = ""
 	state.LastType = ""
@@ -220,7 +222,9 @@ func (m *Monitoring) resetCardState(state *CardState) {
 }
 
 // processPollingResults processes the detected tag
-func (m *Monitoring) processPollingResults(device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string, isQuick bool) {
+func (m *Monitoring) processPollingResults(
+	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string, isQuick bool,
+) {
 	if detectedTag == nil {
 		m.handleCardRemoval(state, readerPath)
 		return
@@ -259,12 +263,14 @@ func (m *Monitoring) updateCardState(state *CardState, detectedTag *pn532.Detect
 }
 
 // shouldTestCard determines if we should test the card
-func (m *Monitoring) shouldTestCard(state *CardState, currentUID string) bool {
+func (*Monitoring) shouldTestCard(state *CardState, currentUID string) bool {
 	return state.TestedUID != currentUID
 }
 
 // testAndRecordCard tests the card and records the result
-func (m *Monitoring) testAndRecordCard(device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, isQuick bool) {
+func (m *Monitoring) testAndRecordCard(
+	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, isQuick bool,
+) {
 	if err := m.testing.TestCard(device, detectedTag, TestMode{Quick: isQuick}); err != nil {
 		m.output.Error("Card test failed: %v", err)
 	} else {
@@ -296,7 +302,7 @@ func (m *Monitoring) CheckCardsQuick(readers []detection.DeviceInfo) {
 
 		tags, err := device.DetectTags(1, 0x00)
 		if err == nil && len(tags) > 0 {
-			fmt.Printf("CARD: Card on %s: %s (UID: %s)\n",
+			_, _ = fmt.Printf("CARD: Card on %s: %s (UID: %s)\n",
 				reader.Path, tags[0].Type, tags[0].UID)
 		}
 

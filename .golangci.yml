@@ -151,7 +151,6 @@ linters:
       min-complexity: 15
     cyclop:
       max-complexity: 15
-      skip-tests: true
     nestif:
       min-complexity: 4
     varnamelen:

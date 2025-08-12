@@ -368,7 +368,8 @@ func (t *NTAGTag) readNDEFBlockByBlock() (*NDEFMessage, error) {
 		if i > 255 {
 			break // Prevent overflow
 		}
-		blockData, err := t.readBlockWithRetry(uint8(i))
+		// Safe conversion: i is checked to be <= 255
+		blockData, err := t.readBlockWithRetry(uint8(i)) // #nosec G115
 		if err != nil {
 			break
 		}

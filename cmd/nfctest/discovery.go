@@ -64,7 +64,7 @@ func (d *Discovery) DiscoverReaders(ctx context.Context) ([]detection.DeviceInfo
 }
 
 // CreateTransport creates the appropriate transport for a device
-func (d *Discovery) CreateTransport(reader detection.DeviceInfo) (pn532.Transport, error) {
+func (*Discovery) CreateTransport(reader detection.DeviceInfo) (pn532.Transport, error) {
 	switch reader.Transport {
 	case TransportUART:
 		transport, err := uart.New(reader.Path)
@@ -90,7 +90,7 @@ func (d *Discovery) CreateTransport(reader detection.DeviceInfo) (pn532.Transpor
 }
 
 // FindNewReaders finds readers that are new compared to the last scan
-func (d *Discovery) FindNewReaders(lastReaders, currentReaders []detection.DeviceInfo) []detection.DeviceInfo {
+func (*Discovery) FindNewReaders(lastReaders, currentReaders []detection.DeviceInfo) []detection.DeviceInfo {
 	var newReaders []detection.DeviceInfo
 
 	for _, current := range currentReaders {
@@ -110,7 +110,7 @@ func (d *Discovery) FindNewReaders(lastReaders, currentReaders []detection.Devic
 }
 
 // FindDisconnectedReaders finds readers that were present but are now gone
-func (d *Discovery) FindDisconnectedReaders(lastReaders, currentReaders []detection.DeviceInfo) []detection.DeviceInfo {
+func (*Discovery) FindDisconnectedReaders(lastReaders, currentReaders []detection.DeviceInfo) []detection.DeviceInfo {
 	var disconnected []detection.DeviceInfo
 
 	for _, last := range lastReaders {

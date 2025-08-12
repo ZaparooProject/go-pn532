@@ -59,7 +59,6 @@ func enrichWithUSBInfo(ports []serialPort) ([]serialPort, error) {
 	setupDiGetClassDevs := setupapi.NewProc("SetupDiGetClassDevsW")
 	setupDiEnumDeviceInfo := setupapi.NewProc("SetupDiEnumDeviceInfo")
 	setupDiGetDeviceRegistryProperty := setupapi.NewProc("SetupDiGetDeviceRegistryPropertyW")
-	setupDiGetDeviceInstanceId := setupapi.NewProc("SetupDiGetDeviceInstanceIdW")
 	setupDiDestroyDeviceInfoList := setupapi.NewProc("SetupDiDestroyDeviceInfoList")
 
 	// GUID for Ports class
@@ -124,7 +123,7 @@ func enrichWithUSBInfo(ports []serialPort) ([]serialPort, error) {
 			SPDRP_FRIENDLYNAME,
 			uintptr(unsafe.Pointer(&propertyType)),
 			uintptr(unsafe.Pointer(&friendlyName[0])),
-			uint32(len(friendlyName)*2),
+			uintptr(uint32(len(friendlyName)*2)),
 			uintptr(unsafe.Pointer(&size)),
 		)
 
@@ -162,7 +161,7 @@ func enrichWithUSBInfo(ports []serialPort) ([]serialPort, error) {
 			SPDRP_HARDWAREID,
 			uintptr(unsafe.Pointer(&propertyType)),
 			uintptr(unsafe.Pointer(&hardwareID[0])),
-			uint32(len(hardwareID)*2),
+			uintptr(uint32(len(hardwareID)*2)),
 			uintptr(unsafe.Pointer(&size)),
 		)
 
@@ -184,7 +183,7 @@ func enrichWithUSBInfo(ports []serialPort) ([]serialPort, error) {
 			SPDRP_MFG,
 			uintptr(unsafe.Pointer(&propertyType)),
 			uintptr(unsafe.Pointer(&mfg[0])),
-			uint32(len(mfg)*2),
+			uintptr(uint32(len(mfg)*2)),
 			uintptr(unsafe.Pointer(&size)),
 		)
 
