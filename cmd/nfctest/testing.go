@@ -131,7 +131,7 @@ func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag, mo
 		return t.testFeliCaTag(tag, mode)
 	case pn532.TagTypeUnknown:
 		return errors.New("unknown tag type detected")
-	case pn532.CardTypeAny:
+	case pn532.TagTypeAny:
 		return errors.New("generic card type - specific testing not available")
 	default:
 		return fmt.Errorf("unsupported tag type: %s", detected.Type)

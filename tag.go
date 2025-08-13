@@ -39,8 +39,8 @@ const (
 	TagTypeFeliCa TagType = "FELICA"
 	// TagTypeUnknown represents unknown tag types.
 	TagTypeUnknown TagType = "UNKNOWN"
-	// CardTypeAny represents any tag type (for detection)
-	CardTypeAny TagType = "ANY"
+	// TagTypeAny represents any tag type (for detection)
+	TagTypeAny TagType = "ANY"
 )
 
 // Tag represents an NFC tag interface
