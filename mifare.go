@@ -447,7 +447,7 @@ func (t *MIFARETag) ReadNDEF() (*NDEFMessage, error) {
 		}
 	}
 
-	return ParseNDEFData(data)
+	return ParseNDEFMessage(data)
 }
 
 func (t *MIFARETag) getTagCapacityParams() (maxSectors uint8, initialCapacity int) {
