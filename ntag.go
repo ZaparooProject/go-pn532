@@ -224,7 +224,7 @@ func (t *NTAGTag) ReadNDEF() (*NDEFMessage, error) {
 		data = data[:totalBytes]
 	}
 
-	return ParseNDEFData(data)
+	return ParseNDEFMessage(data)
 }
 
 type ndefHeader struct {
@@ -392,7 +392,7 @@ func (t *NTAGTag) readNDEFBlockByBlock() (*NDEFMessage, error) {
 		}
 	}
 
-	return ParseNDEFData(data)
+	return ParseNDEFMessage(data)
 }
 
 // WriteNDEF writes NDEF data to the NTAG tag
