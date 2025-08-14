@@ -21,6 +21,7 @@
 package detection
 
 import (
+	"path/filepath"
 	"strings"
 )
 
@@ -124,4 +125,43 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+// IsPathIgnored checks if a device path should be ignored.
+// Supports exact path matching and normalized path comparison.
+func IsPathIgnored(devicePath string, ignorePaths []string) bool {
+	if devicePath == "" || len(ignorePaths) == 0 {
+		return false
+	}
+
+	// Normalize the device path for comparison
+	normalizedDevice := normalizedPath(devicePath)
+
+	for _, ignorePath := range ignorePaths {
+		if ignorePath == "" {
+			continue
+		}
+
+		normalizedIgnore := normalizedPath(ignorePath)
+
+		// Exact match
+		if normalizedDevice == normalizedIgnore {
+			return true
+		}
+
+		// Also check original paths for exact match
+		if devicePath == ignorePath {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizedPath normalizes a device path for comparison
+func normalizedPath(path string) string {
+	// Clean the path to resolve any relative components
+	cleaned := filepath.Clean(path)
+
+	// Convert to lowercase for case-insensitive comparison on Windows
+	return strings.ToLower(cleaned)
 }

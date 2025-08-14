@@ -89,6 +89,11 @@ func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []se
 			continue
 		}
 
+		// Skip explicitly ignored device paths
+		if detection.IsPathIgnored(port.Path, opts.IgnorePaths) {
+			continue
+		}
+
 		// Copy the loop variable to avoid memory aliasing
 		portCopy := port
 		// Apply platform-specific positive filtering
