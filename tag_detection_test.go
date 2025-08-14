@@ -94,7 +94,7 @@ func TestTagTypeConstants(t *testing.T) {
 		{"MIFARE", TagTypeMIFARE, "MIFARE"},
 		{"FeliCa", TagTypeFeliCa, "FELICA"},
 		{"Unknown", TagTypeUnknown, "UNKNOWN"},
-		{"Any", CardTypeAny, "ANY"},
+		{"Any", TagTypeAny, "ANY"},
 	}
 
 	for _, tt := range tests {

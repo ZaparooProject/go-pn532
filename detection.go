@@ -198,7 +198,7 @@ func shouldIncludeTag(tag *DetectedTag, tagType TagType, uid []byte) bool {
 
 // matchesTagTypeFilter checks if tag matches the tag type filter
 func matchesTagTypeFilter(tag *DetectedTag, tagType TagType) bool {
-	return tagType == CardTypeAny || tag.Type == tagType
+	return tagType == TagTypeAny || tag.Type == tagType
 }
 
 // matchesUIDFilter checks if tag UID matches the UID filter
@@ -360,7 +360,7 @@ func (d *Device) CreateTag(detected *DetectedTag) (Tag, error) {
 		return NewFeliCaTag(d, detected.TargetData)
 	case TagTypeUnknown:
 		return nil, ErrInvalidTag
-	case CardTypeAny:
+	case TagTypeAny:
 		return nil, ErrInvalidTag
 	default:
 		return nil, ErrInvalidTag
