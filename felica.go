@@ -359,7 +359,7 @@ func (f *FeliCaTag) ReadNDEF() (*NDEFMessage, error) {
 	actualNdefData := ndefData[:ndefLength]
 
 	// Step 8: Parse NDEF data using existing parser
-	return ParseNDEFData(actualNdefData)
+	return ParseNDEFMessage(actualNdefData)
 }
 
 // WriteNDEF writes NDEF data to the FeliCa tag

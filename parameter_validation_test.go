@@ -320,11 +320,11 @@ func TestNDEFParameterValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := ParseNDEFData(tt.data)
+			_, err := ParseNDEFMessage(tt.data)
 			gotError := err != nil
 
 			if gotError != tt.wantError {
-				t.Errorf("ParseNDEFData() error = %v, wantError %v (%s)", err, tt.wantError, tt.desc)
+				t.Errorf("ParseNDEFMessage() error = %v, wantError %v (%s)", err, tt.wantError, tt.desc)
 			}
 		})
 	}

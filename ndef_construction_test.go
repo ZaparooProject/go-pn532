@@ -253,7 +253,7 @@ func TestCalculateNDEFHeaderErrors(t *testing.T) {
 	}
 }
 
-func TestParseNDEFDataSecurity(t *testing.T) {
+func TestParseNDEFMessageSecurity(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		errorType error
@@ -285,10 +285,10 @@ func TestParseNDEFDataSecurity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			data := make([]byte, tt.dataSize)
-			_, err := ParseNDEFData(data)
+			_, err := ParseNDEFMessage(data)
 
 			if (err != nil) != tt.wantError {
-				t.Errorf("ParseNDEFData() error = %v, wantError %v", err, tt.wantError)
+				t.Errorf("ParseNDEFMessage() error = %v, wantError %v", err, tt.wantError)
 				return
 			}
 
@@ -300,7 +300,7 @@ func TestParseNDEFDataSecurity(t *testing.T) {
 					!containsString(errStr, "security violation") &&
 					!containsString(errStr, "invalid NDEF") &&
 					!containsString(errStr, "no NDEF") {
-					t.Errorf("ParseNDEFData() error type mismatch: got %q, expected to contain %q", errStr, expectedStr)
+					t.Errorf("ParseNDEFMessage() error type mismatch: got %q, expected to contain %q", errStr, expectedStr)
 				}
 			}
 		})
