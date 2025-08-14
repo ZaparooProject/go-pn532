@@ -300,7 +300,8 @@ func TestParseNDEFMessageSecurity(t *testing.T) {
 					!containsString(errStr, "security violation") &&
 					!containsString(errStr, "invalid NDEF") &&
 					!containsString(errStr, "no NDEF") {
-					t.Errorf("ParseNDEFMessage() error type mismatch: got %q, expected to contain %q", errStr, expectedStr)
+					t.Errorf("ParseNDEFMessage() error type mismatch: got %q, expected to contain %q",
+						errStr, expectedStr)
 				}
 			}
 		})
