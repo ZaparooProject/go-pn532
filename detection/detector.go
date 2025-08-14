@@ -83,6 +83,8 @@ func (d DeviceInfo) String() string {
 type Options struct {
 	// USB VID:PID pairs to skip (e.g., ["1234:5678", "ABCD:EF01"])
 	Blocklist []string
+	// Device paths to explicitly ignore (e.g., ["/dev/ttyUSB0", "COM2"])
+	IgnorePaths []string
 	// Which transports to check (empty = all)
 	Transports []string
 	// Cache TTL duration

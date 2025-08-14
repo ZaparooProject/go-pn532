@@ -159,6 +159,11 @@ func (*detector) Detect(ctx context.Context, opts *detection.Options) ([]detecti
 		default:
 		}
 
+		// Skip explicitly ignored device paths
+		if detection.IsPathIgnored(config.Device, opts.IgnorePaths) {
+			continue
+		}
+
 		device := createDeviceInfo(config)
 
 		if probeAndUpdateDevice(ctx, config, &device, opts) {

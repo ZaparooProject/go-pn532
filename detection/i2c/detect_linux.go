@@ -84,6 +84,13 @@ func detectBusDevices(ctx context.Context, bus i2cBusInfo, opts *detection.Optio
 func createDeviceInfo(ctx context.Context, busPath string, addr uint8, opts *detection.Options) (
 	detection.DeviceInfo, bool,
 ) {
+	devicePath := fmt.Sprintf("%s:0x%02X", busPath, addr)
+
+	// Skip explicitly ignored device paths
+	if detection.IsPathIgnored(devicePath, opts.IgnorePaths) {
+		return detection.DeviceInfo{}, true
+	}
+
 	// Check if this could be a PN532
 	if addr != DefaultPN532Address && opts.Mode == detection.Passive {
 		// In passive mode, only consider default PN532 address
@@ -92,7 +99,7 @@ func createDeviceInfo(ctx context.Context, busPath string, addr uint8, opts *det
 
 	device := detection.DeviceInfo{
 		Transport: "i2c",
-		Path:      fmt.Sprintf("%s:0x%02X", busPath, addr),
+		Path:      devicePath,
 		Name:      fmt.Sprintf("I2C device at %s address 0x%02X", busPath, addr),
 		Metadata: map[string]string{
 			"bus":     busPath,
