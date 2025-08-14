@@ -157,7 +157,7 @@ func getSetupAPICOMPorts() ([]serialPort, error) {
 
 		// Allocate buffer of the required size and call again
 		friendlyNameBuf := make([]uint16, requiredSize/2)
-		ret, _, _ := setupDiGetDeviceRegistryProperty.Call(
+		ret, _, _ = setupDiGetDeviceRegistryProperty.Call(
 			devInfo,
 			uintptr(unsafe.Pointer(&devInfoData)),
 			SPDRP_FRIENDLYNAME,
