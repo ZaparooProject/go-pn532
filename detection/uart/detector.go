@@ -51,7 +51,7 @@ func (*detector) Transport() string {
 
 // Detect searches for PN532 devices on serial ports
 func (d *detector) Detect(ctx context.Context, opts *detection.Options) ([]detection.DeviceInfo, error) {
-	ports, err := d.enumeratePorts()
+	ports, err := d.enumeratePorts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -67,8 +67,8 @@ func (d *detector) Detect(ctx context.Context, opts *detection.Options) ([]detec
 }
 
 // enumeratePorts gets the list of available serial ports
-func (*detector) enumeratePorts() ([]serialPort, error) {
-	ports, err := getSerialPorts()
+func (*detector) enumeratePorts(ctx context.Context) ([]serialPort, error) {
+	ports, err := getSerialPorts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enumerate serial ports: %w", err)
 	}

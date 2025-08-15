@@ -65,7 +65,6 @@ type Device struct {
 	transport            Transport
 	config               *DeviceConfig
 	firmwareVersion      *FirmwareVersion
-	pollState            *pollStrategyState
 	currentTarget        byte
 	usePassiveTargetOnly bool
 }
@@ -133,7 +132,6 @@ func New(transport Transport, opts ...Option) (*Device, error) {
 	device := &Device{
 		transport: transport,
 		config:    DefaultDeviceConfig(),
-		pollState: newPollStrategyState(nil), // Initialize with default config
 	}
 
 	// Apply options
@@ -371,45 +369,6 @@ func (d *Device) SetRetryConfig(config *RetryConfig) {
 	}
 }
 
-// SetPollConfig sets the continuous polling configuration
-func (d *Device) SetPollConfig(config *ContinuousPollConfig) error {
-	if config == nil {
-		return ErrInvalidParameter
-	}
-
-	if err := config.Validate(); err != nil {
-		return fmt.Errorf("invalid poll config: %w", err)
-	}
-
-	d.pollState = newPollStrategyState(config)
-
-	// Update support flags based on current transport capabilities
-	hasAutoPollNative := d.hasCapability(CapabilityAutoPollNative)
-	d.pollState.updateSupport(pollSupport{hasAutoPollNative: hasAutoPollNative})
-
-	// Perform RF field warmup to avoid slow first scan
-	// This "primes" the PN532's RF field circuitry for faster subsequent tag detection
-	// Now that polling configuration is set up, we can safely do a warmup poll
-	d.performRFWarmup(context.Background())
-
-	return nil
-}
-
-// GetPollConfig returns the current polling configuration
-func (d *Device) GetPollConfig() *ContinuousPollConfig {
-	if d.pollState == nil {
-		return DefaultContinuousPollConfig()
-	}
-	return d.pollState.config.Clone()
-}
-
-// GetCurrentPollStrategy returns the currently active polling strategy
-func (d *Device) GetCurrentPollStrategy() PollStrategy {
-	if d.pollState == nil {
-		return PollStrategyAuto
-	}
-	return d.pollState.getCurrentStrategy()
-}
 
 // IsAutoPollSupported returns true if the transport supports native InAutoPoll
 func (d *Device) IsAutoPollSupported() bool {

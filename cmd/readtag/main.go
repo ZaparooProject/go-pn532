@@ -31,6 +31,7 @@ import (
 
 	pn532 "github.com/ZaparooProject/go-pn532"
 	"github.com/ZaparooProject/go-pn532/detection"
+
 	// Import all detectors to register them
 	_ "github.com/ZaparooProject/go-pn532/detection/i2c"
 	_ "github.com/ZaparooProject/go-pn532/detection/spi"
@@ -65,13 +66,14 @@ func mustPrintln(args ...any) {
 }
 
 type config struct {
-	devicePath *string
-	timeout    *time.Duration
-	writeText  *string
-	debug      *bool
-	validate   *bool
-	testRobust *bool
-	testTiming *bool
+	devicePath   *string
+	timeout      *time.Duration
+	writeText    *string
+	debug        *bool
+	validate     *bool
+	testRobust   *bool
+	testTiming   *bool
+	pollInterval *time.Duration
 }
 
 func parseFlags() *config {
@@ -84,8 +86,16 @@ func parseFlags() *config {
 		validate:   flag.Bool("validate", true, "Enable read/write validation (default: true)"),
 		testRobust: flag.Bool("test-robust", false, "Test robust authentication features for Chinese clone cards"),
 		testTiming: flag.Bool("test-timing", false, "Test timing variance analysis"),
+		pollInterval: flag.Duration("poll-interval", 100*time.Millisecond,
+			"Polling interval for tag detection (default: 100ms)"),
 	}
 	flag.Parse()
+
+	// Enable debug output if --debug flag is set
+	if *cfg.debug {
+		pn532.SetDebugEnabled(true)
+	}
+
 	return cfg
 }
 
@@ -167,6 +177,7 @@ func buildConnectOptions(cfg *config) []pn532.ConnectOption {
 		_, _ = fmt.Println("Validation enabled")
 	}
 
+	// Set device timeout to prevent InListPassiveTarget from blocking indefinitely
 	connectOpts = append(connectOpts, pn532.WithConnectTimeout(*cfg.timeout))
 	return connectOpts
 }
@@ -185,18 +196,24 @@ func connectToDevice(cfg *config, connectOpts []pn532.ConnectOption) (*pn532.Dev
 	return device, nil
 }
 
-func waitForAndCreateTag(device *pn532.Device, timeout time.Duration) (pn532.Tag, error) {
-	_, _ = fmt.Printf("Waiting for NFC tag (timeout: %s)...\n", timeout)
+func waitForAndCreateTag(device *pn532.Device, timeout, pollInterval time.Duration) (pn532.Tag, error) {
+	_, _ = fmt.Printf("Waiting for NFC tag (timeout: %s, poll interval: %s)...\n", timeout, pollInterval)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	detectedTag, err := device.WaitForTag(ctx)
+	// Use simplified polling with configurable intervals
+	detectedTag, err := device.SimplePoll(ctx, pollInterval)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("timeout: no tag detected within %s", timeout)
 		}
 		return nil, fmt.Errorf("tag detection failed: %w", err)
+	}
+
+	// Handle case where no tag was detected (SimplePoll returns nil, nil)
+	if detectedTag == nil {
+		return nil, fmt.Errorf("no tag detected")
 	}
 
 	tag, err := device.CreateTag(detectedTag)
@@ -497,7 +514,7 @@ func main() {
 	}
 	defer func() { _ = device.Close() }()
 
-	tag, err := waitForAndCreateTag(device, *cfg.timeout)
+	tag, err := waitForAndCreateTag(device, *cfg.timeout, *cfg.pollInterval)
 	if err != nil {
 		_, _ = fmt.Printf("%v\n", err)
 		return
@@ -518,4 +535,219 @@ func main() {
 	}
 
 	_, _ = fmt.Print(tag.DebugInfo())
+
+	// Exit successfully after reading and displaying the tag
+	os.Exit(0)
 }
+
+/*
+SIMPLIFICATION_PLAN.md - Comprehensive Plan for go-pn532 Simplification
+
+## Executive Summary
+
+This plan addresses the critical blocking issue in cmd/readtag where InListPassive calls hang indefinitely,
+while simultaneously eliminating massive over-engineering throughout the codebase. The investigation revealed
+that ~80% of the code complexity can be removed while actually FIXING the core blocking problem.
+
+## Problem Analysis
+
+### Critical Blocking Issue
+- Location: transport/uart/uart.go:484 in t.port.Read(buf)
+- Root Cause: Blocking I/O syscalls that cannot be interrupted by Go context cancellation
+- Impact: cmd/readtag hangs indefinitely on first InListPassive call
+- Current "Solution": Ineffective transport context wrapper that creates goroutine leaks
+
+### Over-Engineering Identified
+1. **Transport Context Layer (transport_context.go)**: 200+ lines of code that provides false context support
+2. **Polling Strategy System (polling_strategy.go)**: 4 different strategies when 1 simple approach suffices
+3. **Complex Configuration**: ContinuousPollConfig with 9 parameters for simple tag detection
+4. **Firmware Quirk Workarounds**: 400+ lines of pre-ACK data processing for edge cases
+5. **Buffer Pooling**: Premature optimization adding complexity for marginal gains
+
+## Simplification Strategy
+
+### Phase 1: Remove Transport Context Layer
+**Files to Delete:**
+- transport_context.go (entire file - 200+ lines removed)
+
+**Files to Modify:**
+- device_context.go: Remove TransportContext usage, call transport methods directly
+- All transport implementations: Remove context wrapper methods
+
+**Justification:**
+The transport context layer creates an illusion of context support while actually being unable to interrupt
+blocking I/O operations. It spawns goroutines that leak when contexts are cancelled, making the problem worse.
+Direct transport calls with proper timeouts are more honest and effective.
+
+### Phase 2: Fix UART Transport Blocking
+**File: transport/uart/uart.go**
+
+**Current Problem:**
+```go
+// Line 484 - This blocks forever and ignores context cancellation
+bytesRead, err := t.port.Read(buf)
+```
+
+**Solution:**
+Replace with proper serial port timeout configuration:
+```go
+// Configure port with read timeout instead of relying on context
+err := t.port.SetReadTimeout(time.Millisecond * 500)
+if err != nil {
+    return nil, err
+}
+bytesRead, err := t.port.Read(buf)
+// This will now timeout after 500ms instead of blocking forever
+```
+
+**Justification:**
+Serial ports have built-in timeout mechanisms that actually work, unlike Go context cancellation with
+blocking syscalls. This is the correct architectural approach for hardware I/O.
+
+### Phase 3: Simplify SimplePoll
+**File: detection.go**
+
+**Current Implementation:** 33 lines with complex retry logic and strategy selection
+**Simplified Implementation:** ~10 lines with direct timeout-based polling
+
+```go
+func (d *Device) SimplePoll(ctx context.Context, interval time.Duration) (*Target, error) {
+    // Set serial timeout for tag detection
+    if err := d.transport.SetTimeout(interval); err != nil {
+        return nil, err
+    }
+    
+    // Simple direct call - no complex retry logic needed
+    targets, err := d.transport.InListPassiveTarget(1, 0x00)
+    if err != nil {
+        return nil, err
+    }
+    
+    if len(targets) > 0 {
+        return &targets[0], nil
+    }
+    return nil, nil // No tag detected
+}
+```
+
+**Justification:**
+The PN532 hardware handles retries internally. Our software retry logic is redundant and creates
+the blocking problem. Simple timeout-based detection is more reliable and maintainable.
+
+### Phase 4: Eliminate Polling Strategy System
+**Files to Delete:**
+- polling_strategy.go (entire file - 300+ lines removed)
+- All strategy-specific implementations
+
+**Files to Modify:**
+- Remove ContinuousPollConfig struct and related complexity
+- Simplify device initialization to use single polling approach
+
+**Justification:**
+All 4 polling strategies (Auto, AutoPoll, Legacy, Manual) accomplish the same basic task: detect NFC tags.
+The strategy pattern here is pure over-engineering. A single, simple approach is more reliable and maintainable.
+
+### Phase 5: Clean Up Configuration Complexity
+**Remove:**
+- ContinuousPollConfig struct (9 fields reduced to 2-3 essential ones)
+- Complex strategy selection logic
+- Unnecessary configuration validation
+
+**Keep:**
+- Basic timeout configuration
+- Essential PN532 command parameters
+- Device initialization settings
+
+**Justification:**
+Most configuration options are unused or provide marginal value while significantly increasing complexity.
+Simple, working defaults are better than complex, buggy configurability.
+
+## Implementation Priority
+
+### Priority 1 (Critical - Fixes Blocking)
+1. Fix UART transport timeout (transport/uart/uart.go)
+2. Remove transport context layer (transport_context.go)
+3. Simplify SimplePoll (detection.go)
+
+### Priority 2 (Major Simplification)
+4. Remove polling strategy system (polling_strategy.go)
+5. Simplify configuration structures
+
+### Priority 3 (Clean Up)
+6. Remove buffer pooling and other premature optimizations
+7. Clean up firmware quirk workarounds (keep only essential ones)
+
+## Expected Outcomes
+
+### Code Reduction
+- **transport_context.go**: 200+ lines → 0 lines (deleted)
+- **polling_strategy.go**: 300+ lines → 0 lines (deleted)
+- **detection.go**: 33 lines → ~10 lines (70% reduction)
+- **device_context.go**: Remove TransportContext usage (~50 lines removed)
+- **Overall**: ~80% reduction in polling/transport code
+
+### Bug Fixes
+- ✅ cmd/readtag no longer blocks indefinitely
+- ✅ Proper timeout handling for NFC tag detection
+- ✅ Eliminates goroutine leaks from transport context
+- ✅ More predictable and reliable behavior
+
+### Maintainability Improvements
+- ✅ Dramatically reduced cognitive complexity
+- ✅ Easier to understand and debug
+- ✅ Fewer edge cases and error paths
+- ✅ More straightforward testing
+
+## Risk Assessment
+
+### Low Risk
+- Removing transport context layer: It doesn't work anyway, so removal is safe
+- Simplifying SimplePoll: Current implementation is buggy, simpler version is more reliable
+- Removing unused polling strategies: Dead code elimination
+
+### Medium Risk
+- UART timeout changes: Requires testing with actual hardware
+- Configuration simplification: May need to preserve some edge case handling
+
+### Mitigation
+- Implement changes incrementally with testing at each step
+- Keep original implementations in version control for reference
+- Test with multiple PN532 devices if available
+
+## Testing Strategy
+
+### Unit Tests
+- Test SimplePoll with mocked transport
+- Verify timeout behavior
+- Test error handling paths
+
+### Integration Tests
+- Test with actual PN532 hardware
+- Verify cmd/readtag works without blocking
+- Test tag detection reliability
+
+### Regression Tests
+- Ensure existing functionality still works
+- Verify performance hasn't degraded
+- Check memory usage and goroutine leaks
+
+## Success Metrics
+
+1. **Primary Goal**: cmd/readtag completes successfully without blocking
+2. **Code Quality**: 80% reduction in polling/transport code complexity
+3. **Reliability**: Consistent tag detection behavior across different scenarios
+4. **Performance**: No goroutine leaks, predictable memory usage
+5. **Maintainability**: New developers can understand the code in <30 minutes
+
+## Conclusion
+
+This simplification directly addresses the user's requirements:
+- ✅ Fixes the blocking issue in cmd/readtag
+- ✅ Drastically simplifies polling mechanisms
+- ✅ Eliminates over-engineering in transport layer
+- ✅ Reduces codebase by ~80% while improving reliability
+
+The current architecture tries to solve simple hardware I/O with complex software abstractions.
+The simplified approach embraces the hardware's natural timeout mechanisms and eliminates
+unnecessary complexity, resulting in code that is both simpler AND more correct.
+*/

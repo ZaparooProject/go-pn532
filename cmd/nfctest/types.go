@@ -48,6 +48,7 @@ type Config struct {
 	Mode           Mode
 	ConnectTimeout time.Duration
 	DetectTimeout  time.Duration
+	PollInterval   time.Duration
 	Verbose        bool
 }
 
@@ -57,6 +58,7 @@ func DefaultConfig() *Config {
 		Mode:           ModeComprehensive,
 		ConnectTimeout: 10 * time.Second,
 		DetectTimeout:  30 * time.Second,
+		PollInterval:   50 * time.Millisecond,
 		Verbose:        false,
 	}
 }

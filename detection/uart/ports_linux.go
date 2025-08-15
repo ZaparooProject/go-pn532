@@ -3,39 +3,57 @@
 package uart
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 // getSerialPorts returns available serial ports on Linux
-func getSerialPorts() ([]serialPort, error) {
+func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
-	// Look for USB serial devices in /sys/class/tty/
-	ttyDir := "/sys/class/tty"
-	entries, err := os.ReadDir(ttyDir)
-	if err != nil {
-		// Fallback to simple /dev enumeration
-		return getSerialPortsFallback()
+	// First try to get USB serial devices with full metadata
+	usbPorts, err := processUSBDevice(ctx, "/sys/bus/usb/devices")
+	if err == nil {
+		ports = append(ports, usbPorts...)
 	}
 
-	for _, entry := range entries {
-		if port, ok := processUSBDevice(ttyDir, entry); ok {
-			ports = append(ports, port)
-		}
+	// Then get built-in serial ports
+	builtinPorts, err := getBuiltinSerialPorts(ctx)
+	if err == nil {
+		ports = append(ports, builtinPorts...)
 	}
 
-	// Also check for non-USB serial ports (built-in serial)
-	builtinPorts := getBuiltinSerialPorts()
-	ports = append(ports, builtinPorts...)
+	// If we still have no ports, fallback to basic enumeration
+	if len(ports) == 0 {
+		return getSerialPortsFallback(ctx)
+	}
 
 	return ports, nil
 }
 
 // getSerialPortsFallback returns serial ports without metadata
 // processUSBDevice checks if a tty entry is a USB device and returns its port info
-func processUSBDevice(ttyDir string, entry os.DirEntry) (serialPort, bool) {
+func processUSBDevice(ctx context.Context, devicesPath string) ([]serialPort, error) {
+	var ports []serialPort
+	
+	ttyDir := "/sys/class/tty"
+	entries, err := os.ReadDir(ttyDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		if port, ok := processUSBDeviceEntry(ttyDir, entry); ok {
+			ports = append(ports, port)
+		}
+	}
+
+	return ports, nil
+}
+
+func processUSBDeviceEntry(ttyDir string, entry os.DirEntry) (serialPort, bool) {
 	if !entry.IsDir() {
 		ttyPath := filepath.Join(ttyDir, entry.Name())
 
@@ -137,7 +155,7 @@ func readUSBDescriptors(port *serialPort, path string) {
 }
 
 // getBuiltinSerialPorts returns non-USB serial ports
-func getBuiltinSerialPorts() []serialPort {
+func getBuiltinSerialPorts(ctx context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
 	// Check for built-in serial ports
@@ -159,10 +177,10 @@ func getBuiltinSerialPorts() []serialPort {
 		}
 	}
 
-	return ports
+	return ports, nil
 }
 
-func getSerialPortsFallback() ([]serialPort, error) {
+func getSerialPortsFallback(ctx context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
 	// Common serial port patterns on Linux

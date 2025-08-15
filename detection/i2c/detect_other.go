@@ -9,6 +9,6 @@ import (
 )
 
 // detectLinux is a stub for non-Linux platforms
-func detectLinux(ctx context.Context, opts *detection.Options) ([]detection.DeviceInfo, error) {
+func detectLinux(_ context.Context, _ *detection.Options) ([]detection.DeviceInfo, error) {
 	return nil, detection.ErrUnsupportedPlatform
 }

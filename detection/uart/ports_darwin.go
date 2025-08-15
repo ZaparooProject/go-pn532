@@ -3,6 +3,7 @@
 package uart
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -10,125 +11,170 @@ import (
 	"strings"
 )
 
-// getSerialPorts returns available serial ports on macOS
-func getSerialPorts() ([]serialPort, error) {
-	// Use ioreg to get USB device information
-	cmd := exec.Command("ioreg", "-r", "-c", "IOSerialBSDClient", "-a")
-	output, err := cmd.Output()
-	if err != nil {
-		// Fallback to simple ls if ioreg fails
-		return getSerialPortsFallback()
+// extractDevicePath extracts the IOCalloutDevice path from ioreg output
+func extractDevicePath(device string) (path, name string, ok bool) {
+	pathRegex := regexp.MustCompile(`"IOCalloutDevice"\s*=\s*"([^"]+)"`)
+	if pathMatch := pathRegex.FindStringSubmatch(device); len(pathMatch) >= 2 {
+		path = pathMatch[1]
+		name = filepath.Base(path)
+		return path, name, true
+	}
+	return "", "", false
+}
+
+// extractVIDPID extracts VID and PID from ioreg output and formats as VID:PID
+func extractVIDPID(device string) string {
+	vidRegex := regexp.MustCompile(`"idVendor"\s*=\s*(\d+)`)
+	pidRegex := regexp.MustCompile(`"idProduct"\s*=\s*(\d+)`)
+
+	vidMatch := vidRegex.FindStringSubmatch(device)
+	pidMatch := pidRegex.FindStringSubmatch(device)
+
+	if len(vidMatch) >= 2 && len(pidMatch) >= 2 {
+		var vidInt, pidInt int
+		if _, err := fmt.Sscanf(vidMatch[1], "%d", &vidInt); err == nil {
+			if _, err := fmt.Sscanf(pidMatch[1], "%d", &pidInt); err == nil {
+				return fmt.Sprintf("%04X:%04X", vidInt, pidInt)
+			}
+		}
+	}
+	return ""
+}
+
+// extractUSBMetadata extracts manufacturer, product, and serial number from ioreg output
+func extractUSBMetadata(device string) (manufacturer, product, serialNumber string) {
+	mfgRegex := regexp.MustCompile(`"USB Vendor Name"\s*=\s*"([^"]+)"`)
+	if mfgMatch := mfgRegex.FindStringSubmatch(device); len(mfgMatch) >= 2 {
+		manufacturer = mfgMatch[1]
 	}
 
-	// Parse the plist output to extract device information
-	// This is a simplified parser - in production you might want to use a proper plist parser
+	prodRegex := regexp.MustCompile(`"USB Product Name"\s*=\s*"([^"]+)"`)
+	if prodMatch := prodRegex.FindStringSubmatch(device); len(prodMatch) >= 2 {
+		product = prodMatch[1]
+	}
 
-	// Split by device entries
-	devices := strings.Split(string(output), "IOSerialBSDClient")
+	serialRegex := regexp.MustCompile(`"USB Serial Number"\s*=\s*"([^"]+)"`)
+	if serialMatch := serialRegex.FindStringSubmatch(device); len(serialMatch) >= 2 {
+		serialNumber = serialMatch[1]
+	}
 
-	// Pre-allocate slice with capacity equal to the number of device entries
-	ports := make([]serialPort, 0, len(devices))
+	return manufacturer, product, serialNumber
+}
+
+// getSerialPorts returns available serial ports on macOS
+func getSerialPorts(ctx context.Context) ([]serialPort, error) {
+	// Use ioreg to get USB device information
+	cmd := exec.CommandContext(ctx, "ioreg", "-r", "-c", "IOSerialBSDClient", "-a")
+	output, err := cmd.Output()
+	if err != nil {
+		return getSerialPortsFallback(ctx)
+	}
+
+	devices := strings.Split(string(output), "+-o ")
+	var ports []serialPort
 
 	for _, device := range devices {
-		// Extract TTY path
-		ttyMatch := regexp.MustCompile(`"IOTTYDevice"\s*=\s*"([^"]+)"`).FindStringSubmatch(device)
-		if len(ttyMatch) < 2 {
+		if !strings.Contains(device, "IOSerialBSDClient") ||
+			!strings.Contains(device, "IOCalloutDevice") {
 			continue
 		}
 
-		port := serialPort{
-			Path: "/dev/" + ttyMatch[1],
-			Name: ttyMatch[1],
-		}
+		var port serialPort
 
-		// Try to extract USB information
-		// Look for parent USB device info
-		if vidMatch := regexp.MustCompile(`"idVendor"\s*=\s*(\d+)`).FindStringSubmatch(device); len(vidMatch) >= 2 {
-			if pidMatch := regexp.MustCompile(`"idProduct"\s*=\s*(\d+)`).FindStringSubmatch(device); len(pidMatch) >= 2 {
-				// Convert decimal to hex
-				vid := vidMatch[1]
-				pid := pidMatch[1]
-				var vidInt, pidInt int
-				if _, err := fmt.Sscanf(vid, "%d", &vidInt); err == nil {
-					if _, err := fmt.Sscanf(pid, "%d", &pidInt); err == nil {
-						port.VIDPID = fmt.Sprintf("%04X:%04X", vidInt, pidInt)
-					}
-				}
-			}
+		// Extract device path
+		path, name, ok := extractDevicePath(device)
+		if !ok {
+			continue
 		}
+		port.Path = path
+		port.Name = name
 
-		// Extract manufacturer and product strings
-		if mfgMatch := regexp.MustCompile(`"USB Vendor Name"\s*=\s*"([^"]+)"`).FindStringSubmatch(device); len(mfgMatch) >= 2 {
-			port.Manufacturer = mfgMatch[1]
-		}
-		if prodMatch := regexp.MustCompile(`"USB Product Name"\s*=\s*"([^"]+)"`).FindStringSubmatch(device); len(prodMatch) >= 2 {
-			port.Product = prodMatch[1]
-		}
-		if serialMatch := regexp.MustCompile(`"USB Serial Number"\s*=\s*"([^"]+)"`).FindStringSubmatch(device); len(serialMatch) >= 2 {
-			port.SerialNumber = serialMatch[1]
-		}
+		// Extract VID/PID information
+		port.VIDPID = extractVIDPID(device)
 
-		ports = append(ports, port)
+		// Extract manufacturer information
+		port.Manufacturer, port.Product, port.SerialNumber = extractUSBMetadata(device)
+
+		if shouldIncludeMacOSDevice(port.Name) {
+			ports = append(ports, port)
+		}
 	}
 
 	if len(ports) == 0 {
-		return getSerialPortsFallback()
+		return getSerialPortsFallback(ctx)
 	}
 
 	return ports, nil
 }
 
+// processCUDevices processes /dev/cu.* devices and adds them to ports
+func processCUDevices(ports []serialPort) []serialPort {
+	matches, err := filepath.Glob("/dev/cu.*")
+	if err != nil {
+		return ports
+	}
+
+	for _, path := range matches {
+		name := filepath.Base(path)
+		if strings.HasPrefix(name, "cu.Bluetooth") {
+			continue
+		}
+
+		if shouldIncludeMacOSDevice(name) {
+			ports = append(ports, serialPort{
+				Path: path,
+				Name: name,
+			})
+		}
+	}
+
+	return ports
+}
+
+// hasCUEquivalent checks if a cu.* equivalent exists for a tty.* path
+func hasCUEquivalent(ttyPath string, ports []serialPort) bool {
+	cuPath := strings.Replace(ttyPath, "/dev/tty.", "/dev/cu.", 1)
+	for _, p := range ports {
+		if p.Path == cuPath {
+			return true
+		}
+	}
+	return false
+}
+
+// processTTYDevices processes /dev/tty.* devices, avoiding duplicates with cu.* devices
+func processTTYDevices(ports []serialPort) []serialPort {
+	ttyMatches, err := filepath.Glob("/dev/tty.*")
+	if err != nil {
+		return ports
+	}
+
+	for _, path := range ttyMatches {
+		name := filepath.Base(path)
+		if strings.HasPrefix(name, "tty.Bluetooth") {
+			continue
+		}
+
+		if !hasCUEquivalent(path, ports) && shouldIncludeMacOSDevice(name) {
+			ports = append(ports, serialPort{
+				Path: path,
+				Name: name,
+			})
+		}
+	}
+
+	return ports
+}
+
 // getSerialPortsFallback returns serial ports without metadata
-func getSerialPortsFallback() ([]serialPort, error) {
+func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
 	// Prefer /dev/cu.* devices over /dev/tty.* for exclusive access on macOS
-	// Check /dev/cu.* devices first
-	matches, err := filepath.Glob("/dev/cu.*")
-	if err == nil {
-		for _, path := range matches {
-			name := filepath.Base(path)
-			if strings.HasPrefix(name, "cu.Bluetooth") {
-				continue
-			}
-
-			// Apply macOS-specific filtering - prefer usbserial devices
-			if shouldIncludeMacOSDevice(name) {
-				ports = append(ports, serialPort{
-					Path: path,
-					Name: name,
-				})
-			}
-		}
-	}
+	ports = processCUDevices(ports)
 
 	// Also check /dev/tty.* devices, but only add if no cu.* equivalent exists
-	ttyMatches, err := filepath.Glob("/dev/tty.*")
-	if err == nil {
-		for _, path := range ttyMatches {
-			name := filepath.Base(path)
-			if strings.HasPrefix(name, "tty.Bluetooth") {
-				continue
-			}
-
-			// Check if we already have the cu.* version
-			cuPath := strings.Replace(path, "/dev/tty.", "/dev/cu.", 1)
-			found := false
-			for _, p := range ports {
-				if p.Path == cuPath {
-					found = true
-					break
-				}
-			}
-
-			if !found && shouldIncludeMacOSDevice(name) {
-				ports = append(ports, serialPort{
-					Path: path,
-					Name: name,
-				})
-			}
-		}
-	}
+	ports = processTTYDevices(ports)
 
 	return ports, nil
 }

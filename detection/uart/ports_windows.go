@@ -3,7 +3,9 @@
 package uart
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"unsafe"
 
@@ -12,19 +14,14 @@ import (
 )
 
 // getSerialPorts returns available serial ports on Windows
-func getSerialPorts() ([]serialPort, error) {
+func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 	// First, try to get COM ports from registry
-	registryPorts, registryErr := getRegistryCOMPorts()
+	registryPorts, registryErr := getRegistryCOMPorts(ctx)
 
 	// Get COM ports from SetupAPI (more comprehensive)
-	setupAPIPorts, setupErr := getSetupAPICOMPorts()
+	setupPorts, setupErr := getSetupAPICOMPorts(ctx)
 
-	// If both methods failed, return combined error information
-	if registryErr != nil && setupErr != nil {
-		return nil, errors.Join(registryErr, setupErr)
-	}
-
-	// Merge ports from both sources, preferring SetupAPI data
+	// Combine results, preferring SetupAPI data when available
 	portMap := make(map[string]serialPort)
 
 	// Add registry ports first
@@ -34,240 +31,179 @@ func getSerialPorts() ([]serialPort, error) {
 		}
 	}
 
-	// Add/overwrite with SetupAPI ports (they have more metadata)
+	// Override with SetupAPI data (usually has more metadata)
 	if setupErr == nil {
-		for _, port := range setupAPIPorts {
+		for _, port := range setupPorts {
 			portMap[port.Path] = port
 		}
 	}
 
 	// Convert map back to slice
-	ports := make([]serialPort, 0, len(portMap))
+	var result []serialPort
 	for _, port := range portMap {
-		ports = append(ports, port)
+		result = append(result, port)
 	}
 
-	return ports, nil
+	// If we got no ports from either method, return the errors
+	if len(result) == 0 {
+		if registryErr != nil && setupErr != nil {
+			return getSerialPortsFallback(ctx)
+		}
+	}
+
+	return result, nil
 }
 
 // getRegistryCOMPorts gets COM ports from Windows registry
-func getRegistryCOMPorts() ([]serialPort, error) {
+func getRegistryCOMPorts(ctx context.Context) ([]serialPort, error) {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DEVICEMAP\SERIALCOMM`, registry.QUERY_VALUE)
 	if err != nil {
 		return nil, err
 	}
 	defer key.Close()
 
-	values, err := key.ReadValueNames(-1)
+	valueNames, err := key.ReadValueNames(-1)
 	if err != nil {
 		return nil, err
 	}
 
-	// Pre-allocate slice with capacity equal to the number of registry values
-	ports := make([]serialPort, 0, len(values))
-	for _, value := range values {
-		portName, _, err := key.GetStringValue(value)
+	var ports []serialPort
+	for _, name := range valueNames {
+		value, _, err := key.GetStringValue(name)
 		if err != nil {
 			continue
 		}
 
-		ports = append(ports, serialPort{
-			Path: portName,
-			Name: portName,
-		})
+		port := serialPort{
+			Path: value,
+			Name: value,
+		}
+		ports = append(ports, port)
 	}
 
 	return ports, nil
 }
 
 // getSetupAPICOMPorts gets COM ports directly from SetupAPI
-func getSetupAPICOMPorts() ([]serialPort, error) {
+func getSetupAPICOMPorts(ctx context.Context) ([]serialPort, error) {
 	// Load setupapi.dll
-	setupapi := windows.NewLazySystemDLL("setupapi.dll")
-	setupDiGetClassDevs := setupapi.NewProc("SetupDiGetClassDevsW")
-	setupDiEnumDeviceInfo := setupapi.NewProc("SetupDiEnumDeviceInfo")
-	setupDiGetDeviceRegistryProperty := setupapi.NewProc("SetupDiGetDeviceRegistryPropertyW")
-	setupDiDestroyDeviceInfoList := setupapi.NewProc("SetupDiDestroyDeviceInfoList")
+	setupapi := windows.NewLazyDLL("setupapi.dll")
+	procSetupDiGetClassDevs := setupapi.NewProc("SetupDiGetClassDevsW")
+	procSetupDiEnumDeviceInfo := setupapi.NewProc("SetupDiEnumDeviceInfo")
+	procSetupDiGetDeviceRegistryProperty := setupapi.NewProc("SetupDiGetDeviceRegistryPropertyW")
+	procSetupDiDestroyDeviceInfoList := setupapi.NewProc("SetupDiDestroyDeviceInfoList")
 
-	// GUID for Ports class
-	guidPorts := windows.GUID{
-		Data1: 0x4d36e978,
-		Data2: 0xe325,
-		Data3: 0x11ce,
-		Data4: [8]byte{0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18},
+	// GUID for Ports (COM & LPT ports) device class
+	// {4D36E978-E325-11CE-BFC1-08002BE10318}
+	portsClassGUID := windows.GUID{
+		Data1: 0x4D36E978,
+		Data2: 0xE325,
+		Data3: 0x11CE,
+		Data4: [8]byte{0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18},
 	}
 
-	// Get device info set
 	const DIGCF_PRESENT = 0x00000002
-	devInfo, _, _ := setupDiGetClassDevs.Call(
-		uintptr(unsafe.Pointer(&guidPorts)),
+
+	// Get device info set
+	deviceInfoSet, _, _ := procSetupDiGetClassDevs.Call(
+		uintptr(unsafe.Pointer(&portsClassGUID)),
 		0,
 		0,
 		DIGCF_PRESENT,
 	)
-
-	if devInfo == uintptr(windows.InvalidHandle) {
-		return nil, windows.GetLastError()
+	if deviceInfoSet == 0 {
+		return nil, errors.New("failed to get device info set")
 	}
-	defer setupDiDestroyDeviceInfoList.Call(devInfo)
+	defer procSetupDiDestroyDeviceInfoList.Call(deviceInfoSet)
 
 	var ports []serialPort
+	deviceIndex := 0
 
-	// Enumerate devices
-	type spDevinfoData struct {
-		cbSize    uint32
-		classGuid windows.GUID
-		devInst   uint32
-		reserved  uintptr
-	}
-
-	var devInfoData spDevinfoData
-	devInfoData.cbSize = uint32(unsafe.Sizeof(devInfoData))
-
-	for i := uint32(0); ; i++ {
-		ret, _, _ := setupDiEnumDeviceInfo.Call(
-			devInfo,
-			uintptr(i),
-			uintptr(unsafe.Pointer(&devInfoData)),
-		)
-
-		if ret == 0 {
-			break
+	for {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
 		}
 
-		// Get friendly name (includes COM port) using two-call pattern
-		const SPDRP_FRIENDLYNAME = 0x0000000C
-		var propertyType uint32
-		var requiredSize uint32
+		var deviceInfoData struct {
+			Size      uint32
+			ClassGuid windows.GUID
+			DevInst   uint32
+			Reserved  uintptr
+		}
+		deviceInfoData.Size = uint32(unsafe.Sizeof(deviceInfoData))
 
-		// First call to get the required buffer size
-		setupDiGetDeviceRegistryProperty.Call(
-			devInfo,
-			uintptr(unsafe.Pointer(&devInfoData)),
-			SPDRP_FRIENDLYNAME,
-			0, // propertyType is optional on first call
-			0, // nil buffer
-			0, // buffer size 0
+		// Enumerate device
+		ret, _, _ := procSetupDiEnumDeviceInfo.Call(
+			deviceInfoSet,
+			uintptr(deviceIndex),
+			uintptr(unsafe.Pointer(&deviceInfoData)),
+		)
+		if ret == 0 {
+			break // No more devices
+		}
+
+		// Get friendly name (SPDRP_FRIENDLYNAME = 12)
+		var friendlyName [256]uint16
+		var requiredSize uint32
+		procSetupDiGetDeviceRegistryProperty.Call(
+			deviceInfoSet,
+			uintptr(unsafe.Pointer(&deviceInfoData)),
+			12, // SPDRP_FRIENDLYNAME
+			0,
+			uintptr(unsafe.Pointer(&friendlyName[0])),
+			uintptr(len(friendlyName)*2),
 			uintptr(unsafe.Pointer(&requiredSize)),
 		)
 
-		if requiredSize == 0 {
-			continue
-		}
+		friendlyNameStr := windows.UTF16ToString(friendlyName[:])
 
-		// Allocate buffer of the required size and call again
-		friendlyNameBuf := make([]uint16, requiredSize/2)
-		ret, _, _ = setupDiGetDeviceRegistryProperty.Call(
-			devInfo,
-			uintptr(unsafe.Pointer(&devInfoData)),
-			SPDRP_FRIENDLYNAME,
-			uintptr(unsafe.Pointer(&propertyType)),
-			uintptr(unsafe.Pointer(&friendlyNameBuf[0])),
-			uintptr(requiredSize),
-			0, // requiredSize is optional on second call
+		// Get hardware ID (SPDRP_HARDWAREID = 1)
+		var hardwareID [256]uint16
+		procSetupDiGetDeviceRegistryProperty.Call(
+			deviceInfoSet,
+			uintptr(unsafe.Pointer(&deviceInfoData)),
+			1, // SPDRP_HARDWAREID
+			0,
+			uintptr(unsafe.Pointer(&hardwareID[0])),
+			uintptr(len(hardwareID)*2),
+			uintptr(unsafe.Pointer(&requiredSize)),
 		)
 
-		if ret == 0 {
-			continue
-		}
+		hardwareIDStr := windows.UTF16ToString(hardwareID[:])
 
-		name := windows.UTF16ToString(friendlyNameBuf)
-
-		// Extract COM port from friendly name
-		var comPort string
-		if n := strings.LastIndex(name, "(COM"); n >= 0 {
-			if m := strings.Index(name[n:], ")"); m >= 0 {
-				comPort = name[n+1 : n+m]
+		// Extract COM port name from friendly name
+		if strings.Contains(friendlyNameStr, "COM") {
+			port := serialPort{
+				Name:         friendlyNameStr,
+				Manufacturer: "Unknown",
+				Product:      friendlyNameStr,
 			}
-		}
 
-		if comPort == "" {
-			continue
-		}
-
-		// Create new port entry
-		port := serialPort{
-			Path: comPort,
-			Name: name,
-		}
-
-		// Get hardware ID for VID/PID using two-call pattern
-		const SPDRP_HARDWAREID = 0x00000001
-		var hwRequiredSize uint32
-
-		// First call to get the required buffer size
-		setupDiGetDeviceRegistryProperty.Call(
-			devInfo,
-			uintptr(unsafe.Pointer(&devInfoData)),
-			SPDRP_HARDWAREID,
-			0, // propertyType is optional on first call
-			0, // nil buffer
-			0, // buffer size 0
-			uintptr(unsafe.Pointer(&hwRequiredSize)),
-		)
-
-		if hwRequiredSize > 0 {
-			// Allocate buffer of the required size and call again
-			hardwareIDBuf := make([]uint16, hwRequiredSize/2)
-			ret, _, _ = setupDiGetDeviceRegistryProperty.Call(
-				devInfo,
-				uintptr(unsafe.Pointer(&devInfoData)),
-				SPDRP_HARDWAREID,
-				uintptr(unsafe.Pointer(&propertyType)),
-				uintptr(unsafe.Pointer(&hardwareIDBuf[0])),
-				uintptr(hwRequiredSize),
-				0, // hwRequiredSize is optional on second call
-			)
-
-			if ret != 0 {
-				hwid := windows.UTF16ToString(hardwareIDBuf)
-				// Parse VID/PID from hardware ID (format: USB\VID_xxxx&PID_xxxx)
-				if vidpid := parseWindowsHardwareID(hwid); vidpid != "" {
-					port.VIDPID = vidpid
+			// Extract COM port (e.g., "COM3")
+			comStart := strings.Index(strings.ToUpper(friendlyNameStr), "COM")
+			if comStart != -1 {
+				comPart := friendlyNameStr[comStart:]
+				if idx := strings.Index(comPart, ")"); idx != -1 {
+					comPart = comPart[:idx]
 				}
+				if idx := strings.Index(comPart, " "); idx != -1 {
+					comPart = comPart[:idx]
+				}
+				port.Path = comPart
 			}
-		}
 
-		// Get manufacturer using two-call pattern
-		const SPDRP_MFG = 0x0000000B
-		var mfgRequiredSize uint32
-
-		// First call to get the required buffer size
-		setupDiGetDeviceRegistryProperty.Call(
-			devInfo,
-			uintptr(unsafe.Pointer(&devInfoData)),
-			SPDRP_MFG,
-			0, // propertyType is optional on first call
-			0, // nil buffer
-			0, // buffer size 0
-			uintptr(unsafe.Pointer(&mfgRequiredSize)),
-		)
-
-		if mfgRequiredSize > 0 {
-			// Allocate buffer of the required size and call again
-			mfgBuf := make([]uint16, mfgRequiredSize/2)
-			ret, _, _ = setupDiGetDeviceRegistryProperty.Call(
-				devInfo,
-				uintptr(unsafe.Pointer(&devInfoData)),
-				SPDRP_MFG,
-				uintptr(unsafe.Pointer(&propertyType)),
-				uintptr(unsafe.Pointer(&mfgBuf[0])),
-				uintptr(mfgRequiredSize),
-				0, // mfgRequiredSize is optional on second call
-			)
-
-			if ret != 0 {
-				port.Manufacturer = windows.UTF16ToString(mfgBuf)
+			// Parse hardware ID for VID/PID
+			if hardwareIDStr != "" {
+				parseWindowsHardwareID(&port, hardwareIDStr)
 			}
+
+			ports = append(ports, port)
 		}
 
-		// Extract product from friendly name
-		if n := strings.Index(name, " ("); n > 0 {
-			port.Product = name[:n]
-		}
-
-		// Add port to results
-		ports = append(ports, port)
+		deviceIndex++
 	}
 
 	return ports, nil
@@ -307,12 +243,25 @@ func parseWindowsHardwareID(hwid string) string {
 }
 
 // getSerialPortsFallback provides a fallback method for COM port detection
-func getSerialPortsFallback() ([]serialPort, error) {
-	// Try SetupAPI first as it's more comprehensive
-	if ports, err := getSetupAPICOMPorts(); err == nil {
-		return ports, nil
+func getSerialPortsFallback(ctx context.Context) ([]serialPort, error) {
+	var ports []serialPort
+
+	// Try common COM port names
+	for i := 1; i <= 16; i++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		portName := fmt.Sprintf("COM%d", i)
+		// Simple existence check by trying to open the port
+		// On Windows, we can't easily check if the port exists without trying to open it
+		ports = append(ports, serialPort{
+			Path: portName,
+			Name: portName,
+		})
 	}
 
-	// Fallback to registry method
-	return getRegistryCOMPorts()
+	return ports, nil
 }

@@ -112,16 +112,7 @@ func (m *Monitoring) createDevice(reader detection.DeviceInfo) (*pn532.Device, e
 		return nil, fmt.Errorf("failed to initialize device: %w", err)
 	}
 
-	// Configure polling for rapid single-shot detection (not continuous)
-	config := pn532.DefaultContinuousPollConfig()
-	config.PollCount = 1  // Single poll cycle per DetectTag call (not endless)
-	config.PollPeriod = 1 // 150ms period for faster response
-	if err := device.SetPollConfig(config); err != nil {
-		_ = device.Close()
-		_ = transport.Close()
-		return nil, fmt.Errorf("failed to set poll config: %w", err)
-	}
-
+	// No polling configuration needed - simplified approach uses direct timeout-based detection
 	return device, nil
 }
 
@@ -170,19 +161,16 @@ func (m *Monitoring) continuousPolling(
 		}
 
 		m.processPollingResults(device, detectedTag, state, readerPath, isQuick)
-		time.Sleep(50 * time.Millisecond)
+		// No additional sleep needed - SimplePoll handles timing internally
 	}
 }
 
 // performSinglePoll performs a single tag detection cycle using the sophisticated strategy system
-func (*Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device) (*pn532.DetectedTag, error) {
-	// Use short timeout for responsive card removal detection
-	pollCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-
-	detectedTag, err := device.DetectTagContext(pollCtx)
+func (m *Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device) (*pn532.DetectedTag, error) {
+	// Use simplified polling with configurable interval from config
+	detectedTag, err := device.SimplePoll(ctx, m.config.PollInterval)
 	if err != nil {
-		if errors.Is(err, pn532.ErrNoTagDetected) {
+		if errors.Is(err, pn532.ErrNoTagDetected) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, ErrNoTagInPoll // No tag detected, but not an error
 		}
 		return nil, fmt.Errorf("tag detection failed: %w", err)

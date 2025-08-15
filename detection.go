@@ -125,32 +125,42 @@ func (d *Device) WaitForTag(ctx context.Context) (*DetectedTag, error) {
 	}
 }
 
-// selectDetectionStrategy chooses the appropriate detection strategy
-// Integrates with the polling strategy system for intelligent strategy selection
-func (d *Device) selectDetectionStrategy() PollStrategy {
-	if d.pollState == nil {
-		// No polling state configured - use legacy for safety
-		return PollStrategyLegacy
+// SimplePoll performs straightforward polling with InListPassiveTarget on a regular schedule
+// This is a simplified alternative to WaitForTag that removes complex error handling and
+// strategy selection, providing predictable poll-poll-poll behavior at regular intervals.
+func (d *Device) SimplePoll(ctx context.Context, interval time.Duration) (*DetectedTag, error) {
+	// Set transport timeout for individual polling attempts
+	if err := d.transport.SetTimeout(interval); err != nil {
+		return nil, err
 	}
-
-	// Update transport capability support
-	hasAutoPollNative := d.hasCapability(CapabilityAutoPollNative)
-	d.pollState.updateSupport(pollSupport{hasAutoPollNative: hasAutoPollNative})
-
-	// Get the resolved strategy
-	strategy := d.pollState.getCurrentStrategy()
-
-	// Additional transport-specific overrides for problematic configurations
-	if strategy == PollStrategyAutoPoll {
-		// Check for session-level fallback flag (legacy compatibility)
-		if d.usePassiveTargetOnly {
-			debugln("Session fallback active, overriding to legacy strategy")
-			return PollStrategyLegacy
+	
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			// Try to detect tags
+			tags, err := d.InListPassiveTargetContext(ctx, 1, 0x00)
+			if err != nil {
+				// Continue polling on errors (device might be temporarily busy)
+				debugf("Polling error (continuing): %v", err)
+				continue
+			}
+			
+			if len(tags) > 0 {
+				return tags[0], nil
+			}
+			// No tag detected this cycle, continue polling
 		}
 	}
-
-	return strategy
 }
+
+// selectDetectionStrategy chooses the appropriate detection strategy
+// Integrates with the polling strategy system for intelligent strategy selection
+
 
 // DetectTags detects multiple tags in the field
 // maxTags: maximum number of tags to detect (1-2)

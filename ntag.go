@@ -265,17 +265,22 @@ func (t *NTAGTag) ensureTagTypeDetected() error {
 
 func (t *NTAGTag) readNDEFDataWithFastRead(_ *ndefHeader, totalBytes int) ([]byte, error) {
 	if t.fastReadSupported != nil && !*t.fastReadSupported {
+		debugf("NTAG FastRead disabled - using block-by-block fallback")
 		return nil, errors.New("fastread not supported")
 	}
 
+	debugf("NTAG attempting FastRead for NDEF data (%d bytes)", totalBytes)
 	readRange := t.calculateReadRange(totalBytes)
 
 	maxPagesPerRead := uint8(60)
 
 	if readRange.endPage-readRange.startPage+1 <= maxPagesPerRead {
+		debugf("NTAG using single FastRead for pages %d-%d", readRange.startPage, readRange.endPage)
 		return t.performSingleFastRead(readRange.startPage, readRange.endPage)
 	}
 
+	debugf("NTAG using multiple FastReads for pages %d-%d (max %d pages per read)", 
+		readRange.startPage, readRange.endPage, maxPagesPerRead)
 	return t.performMultipleFastReads(readRange.startPage, readRange.endPage, maxPagesPerRead)
 }
 
@@ -353,12 +358,15 @@ func (*NTAGTag) isFastReadNotSupportedError(err error) bool {
 }
 
 func (t *NTAGTag) markFastReadAsUnsupported() {
+	debugf("NTAG marking FastRead as unsupported - will use block-by-block reads")
 	supported := false
 	t.fastReadSupported = &supported
 }
 
 // readNDEFBlockByBlock is the fallback method using block-by-block reads
 func (t *NTAGTag) readNDEFBlockByBlock() (*NDEFMessage, error) {
+	debugf("NTAG reading NDEF data using block-by-block method (FastRead unavailable)")
+	
 	// Read user memory blocks starting from block 4
 	data := make([]byte, 0, ntagMaxBlocks*ntagBlockSize)
 	emptyBlocks := 0
@@ -392,6 +400,7 @@ func (t *NTAGTag) readNDEFBlockByBlock() (*NDEFMessage, error) {
 		}
 	}
 
+	debugf("NTAG block-by-block read completed: %d bytes", len(data))
 	return ParseNDEFMessage(data)
 }
 
@@ -471,6 +480,8 @@ func (t *NTAGTag) FastRead(startAddr, endAddr uint8) ([]byte, error) {
 		return nil, fmt.Errorf("invalid address range: start (%d) > end (%d)", startAddr, endAddr)
 	}
 
+	debugf("NTAG FastRead: reading pages %d-%d (%d pages)", startAddr, endAddr, endAddr-startAddr+1)
+
 	// FAST_READ command format: 0x3A + start address + end address
 	cmd := []byte{ntagCmdFastRead, startAddr, endAddr}
 
@@ -478,6 +489,7 @@ func (t *NTAGTag) FastRead(startAddr, endAddr uint8) ([]byte, error) {
 	// (SendDataExchange returns error 0x81 on some PN532 variants)
 	data, err := t.device.SendRawCommand(cmd)
 	if err != nil {
+		debugf("NTAG FastRead failed: %v", err)
 		return nil, fmt.Errorf("FAST_READ failed: %w", err)
 	}
 
@@ -487,6 +499,7 @@ func (t *NTAGTag) FastRead(startAddr, endAddr uint8) ([]byte, error) {
 		return nil, fmt.Errorf("FAST_READ response too short: expected %d bytes, got %d", expectedBytes, len(data))
 	}
 
+	debugf("NTAG FastRead successful: read %d bytes", expectedBytes)
 	return data[:expectedBytes], nil
 }
 

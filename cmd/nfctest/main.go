@@ -47,6 +47,8 @@ func run() int {
 	vendorTest := flag.Bool("vendor-test", false, "Vendor test mode - continuous operation for testing readers")
 	connectTimeoutFlag := flag.Duration("connect-timeout", 10*time.Second, "Reader connection timeout")
 	detectTimeoutFlag := flag.Duration("detect-timeout", 30*time.Second, "Card/tag detection timeout")
+	pollIntervalFlag := flag.Duration("poll-interval", 50*time.Millisecond,
+		"Polling interval for tag detection (default: 50ms)")
 	verboseFlag := flag.Bool("verbose", false, "Enable verbose output")
 
 	flag.Parse()
@@ -66,6 +68,7 @@ func run() int {
 
 	config.ConnectTimeout = *connectTimeoutFlag
 	config.DetectTimeout = *detectTimeoutFlag
+	config.PollInterval = *pollIntervalFlag
 	config.Verbose = *verboseFlag
 
 	// Setup signal handling for graceful shutdown

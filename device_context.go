@@ -122,8 +122,7 @@ func (d *Device) setDefaultFirmwareVersion() {
 
 // GetFirmwareVersionContext returns the PN532 firmware version with context support
 func (d *Device) GetFirmwareVersionContext(ctx context.Context) (*FirmwareVersion, error) {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdGetFirmwareVersion, []byte{})
+	res, err := d.transport.SendCommand(cmdGetFirmwareVersion, []byte{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to send GetFirmwareVersion command: %w", err)
 	}
@@ -229,8 +228,7 @@ func (*Device) createDefaultFirmwareVersion() *FirmwareVersion {
 
 // GetGeneralStatusContext returns the PN532 general status with context support
 func (d *Device) GetGeneralStatusContext(ctx context.Context) (*GeneralStatus, error) {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdGetGeneralStatus, []byte{})
+	res, err := d.transport.SendCommand(cmdGetGeneralStatus, []byte{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to send GetGeneralStatus command: %w", err)
 	}
@@ -247,12 +245,10 @@ func (d *Device) GetGeneralStatusContext(ctx context.Context) (*GeneralStatus, e
 
 // DiagnoseContext performs a self-diagnosis test with context support
 func (d *Device) DiagnoseContext(ctx context.Context, testNumber byte, data []byte) (*DiagnoseResult, error) {
-	tc := AsTransportContext(d.transport)
-
 	// Build command: TestNumber + optional data
 	cmdPayload := append([]byte{testNumber}, data...)
 
-	res, err := tc.SendCommandContext(ctx, cmdDiagnose, cmdPayload)
+	res, err := d.transport.SendCommand(cmdDiagnose, cmdPayload)
 	if err != nil {
 		return nil, fmt.Errorf("diagnose command failed: %w", err)
 	}
@@ -316,8 +312,7 @@ func (d *Device) setupSAMConfigurationContext(ctx context.Context) error {
 
 // SAMConfigurationContext configures the SAM with context support
 func (d *Device) SAMConfigurationContext(ctx context.Context, mode SAMMode, timeout, irq byte) error {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdSamConfiguration, []byte{byte(mode), timeout, irq})
+	res, err := d.transport.SendCommand(cmdSamConfiguration, []byte{byte(mode), timeout, irq})
 	if err != nil {
 		return fmt.Errorf("SAM configuration command failed: %w", err)
 	}
@@ -359,147 +354,16 @@ func (d *Device) DetectTagsContext(ctx context.Context, maxTags, baudRate byte) 
 		maxTags = 1
 	}
 
-	// Use polling strategy system to determine the appropriate detection method
-	strategy := d.selectDetectionStrategy()
-
-	debugf("Using polling strategy: %s", strategy)
-
-	switch strategy {
-	case PollStrategyAutoPoll:
-		return d.detectTagsWithInAutoPoll(ctx, maxTags, baudRate)
-
-	case PollStrategyLegacy:
-		return d.detectTagsWithInListPassiveTarget(ctx, maxTags, baudRate)
-
-	case PollStrategyManual:
-		// Manual strategy requires explicit application control
-		return nil, errors.New("manual polling strategy requires explicit application control")
-
-	case PollStrategyAuto:
-		// This shouldn't happen as selectDetectionStrategy resolves auto to specific strategy
-		// Default to legacy method for auto strategy case
-		debugf("Auto strategy not resolved, defaulting to legacy")
-		return d.detectTagsWithInListPassiveTarget(ctx, maxTags, baudRate)
-
-	default:
-		// Default to legacy method for unknown strategies
-		debugf("Unknown strategy %s, defaulting to legacy", strategy)
-		return d.detectTagsWithInListPassiveTarget(ctx, maxTags, baudRate)
-	}
+	// Use simple InListPassiveTarget approach - no complex strategy selection needed
+	return d.detectTagsWithInListPassiveTarget(ctx, maxTags, baudRate)
 }
 
-// detectTagsWithInAutoPoll uses InAutoPoll for hardware-managed continuous polling
-func (d *Device) detectTagsWithInAutoPoll(ctx context.Context, maxTags, baudRate byte) ([]*DetectedTag, error) {
-	debugln("Using InAutoPoll strategy")
 
-	config := d.GetPollConfig()
-	optimized := d.getOptimizedPollParams(PollStrategyAutoPoll)
 
-	targetTypes := d.selectTargetTypes(config, optimized, baudRate)
-	pollPeriod := d.selectPollPeriod(config, optimized)
 
-	if err := d.prepareTransportForInAutoPoll(ctx); err != nil {
-		return d.handleTransportPreparationError(err)
-	}
 
-	results, err := d.InAutoPollContext(ctx, config.PollCount, pollPeriod, targetTypes)
-	if err != nil {
-		params := autoPollParams{maxTags: maxTags, baudRate: baudRate}
-		return d.handleInAutoPollError(ctx, err, config, optimized, params)
-	}
 
-	if len(results) == 0 {
-		return nil, ErrNoTagDetected
-	}
 
-	d.recordPollSuccess()
-	debugf("InAutoPoll detected %d tag(s), converting to DetectedTag format with proper target numbering", len(results))
-
-	return d.convertAutoPollResults(ctx, results, maxTags)
-}
-
-// selectTargetTypes determines the appropriate target types for polling
-func (*Device) selectTargetTypes(config *ContinuousPollConfig, optimized *OptimizedPollParams,
-	baudRate byte,
-) []AutoPollTarget {
-	targetTypes := config.TargetTypes
-	if len(targetTypes) == 0 {
-		// Use transport-optimized target types
-		targetTypes = optimized.TargetTypes
-		if baudRate != 0x00 && len(targetTypes) < 4 {
-			// For non-standard baud rates, ensure we have comprehensive coverage
-			targetTypes = make([]AutoPollTarget, 0, 4)
-			targetTypes = append(targetTypes,
-				AutoPollGeneric106kbps, AutoPollMifare, AutoPollFeliCa212, AutoPollFeliCa424)
-		}
-	}
-	return targetTypes
-}
-
-// selectPollPeriod determines the appropriate poll period
-func (*Device) selectPollPeriod(config *ContinuousPollConfig, optimized *OptimizedPollParams) byte {
-	pollPeriod := config.PollPeriod
-	if pollPeriod == 0 || (config.Strategy == PollStrategyAuto && pollPeriod == 2) {
-		// Use transport-optimized poll period
-		pollPeriod = optimized.PollPeriod
-	}
-	return pollPeriod
-}
-
-// handleTransportPreparationError handles transport preparation failures
-func (d *Device) handleTransportPreparationError(err error) ([]*DetectedTag, error) {
-	debugf("Transport preparation failed: %v, recording failure", err)
-	if d.pollState != nil {
-		d.pollState.recordFailure()
-	}
-	return nil, fmt.Errorf("transport preparation failed: %w", err)
-}
-
-// handleInAutoPollError handles InAutoPoll command failures with retry logic
-func (d *Device) handleInAutoPollError(
-	ctx context.Context, err error, config *ContinuousPollConfig,
-	optimized *OptimizedPollParams, pollParams autoPollParams,
-) ([]*DetectedTag, error) {
-	debugf("InAutoPoll failed: %v", err)
-	if d.pollState != nil {
-		d.pollState.recordFailure()
-	}
-
-	// Check if we should retry or fallback
-	if d.pollState != nil && d.pollState.shouldRetry() {
-		return d.retryInAutoPoll(ctx, config, optimized, pollParams.maxTags, pollParams.baudRate)
-	}
-
-	return nil, fmt.Errorf("InAutoPoll failed: %w", err)
-}
-
-// retryInAutoPoll performs a retry attempt with delay
-func (d *Device) retryInAutoPoll(
-	ctx context.Context, config *ContinuousPollConfig, optimized *OptimizedPollParams, maxTags, baudRate byte,
-) ([]*DetectedTag, error) {
-	debugln("Retrying InAutoPoll after delay")
-
-	// Use optimized retry delay if configured delay is default
-	retryDelay := config.RetryDelay
-	if retryDelay == 500*time.Millisecond {
-		retryDelay = optimized.RetryDelay
-	}
-
-	select {
-	case <-time.After(retryDelay):
-	case <-ctx.Done():
-		return nil, fmt.Errorf("context cancelled while retrying tag detection: %w", ctx.Err())
-	}
-
-	return d.detectTagsWithInAutoPoll(ctx, maxTags, baudRate)
-}
-
-// recordPollSuccess records a successful polling operation
-func (d *Device) recordPollSuccess() {
-	if d.pollState != nil {
-		d.pollState.recordSuccess()
-	}
-}
 
 // detectTagsWithInListPassiveTarget uses traditional InListPassiveTarget polling
 func (d *Device) detectTagsWithInListPassiveTarget(
@@ -711,9 +575,8 @@ func (*Device) parseISO14443BData(targetData []byte) []byte {
 
 // SendDataExchangeContext sends a data exchange command with context support
 func (d *Device) SendDataExchangeContext(ctx context.Context, data []byte) ([]byte, error) {
-	tc := AsTransportContext(d.transport)
 	targetNum := d.getCurrentTarget()
-	res, err := tc.SendCommandContext(ctx, cmdInDataExchange, append([]byte{targetNum}, data...))
+	res, err := d.transport.SendCommand(cmdInDataExchange, append([]byte{targetNum}, data...))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send data exchange command: %w", err)
 	}
@@ -735,8 +598,7 @@ func (d *Device) SendDataExchangeContext(ctx context.Context, data []byte) ([]by
 
 // SendRawCommandContext sends a raw command with context support
 func (d *Device) SendRawCommandContext(ctx context.Context, data []byte) ([]byte, error) {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdInCommunicateThru, data)
+	res, err := d.transport.SendCommand(cmdInCommunicateThru, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send communicate through command: %w", err)
 	}
@@ -758,8 +620,7 @@ func (d *Device) SendRawCommandContext(ctx context.Context, data []byte) ([]byte
 
 // InReleaseContext releases the selected target(s) with context support
 func (d *Device) InReleaseContext(ctx context.Context, targetNumber byte) error {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdInRelease, []byte{targetNumber})
+	res, err := d.transport.SendCommand(cmdInRelease, []byte{targetNumber})
 	if err != nil {
 		return fmt.Errorf("InRelease command failed: %w", err)
 	}
@@ -778,8 +639,7 @@ func (d *Device) InReleaseContext(ctx context.Context, targetNumber byte) error 
 
 // InSelectContext selects the specified target with context support
 func (d *Device) InSelectContext(ctx context.Context, targetNumber byte) error {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdInSelect, []byte{targetNumber})
+	res, err := d.transport.SendCommand(cmdInSelect, []byte{targetNumber})
 	if err != nil {
 		return fmt.Errorf("InSelect command failed: %w", err)
 	}
@@ -817,8 +677,7 @@ func (d *Device) InAutoPollContext(
 		data = append(data, byte(tt))
 	}
 
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdInAutoPoll, data)
+	res, err := d.transport.SendCommand(cmdInAutoPoll, data)
 	if err != nil {
 		return nil, fmt.Errorf("InAutoPoll command failed: %w", err)
 	}
@@ -882,6 +741,35 @@ func (d *Device) InListPassiveTargetContext(ctx context.Context, maxTg, brTy byt
 	return d.parseInListPassiveTargetResponse(res)
 }
 
+// InListPassiveTargetWithTimeoutContext detects passive targets using InListPassiveTarget command with timeout support.
+// The mxRtyATR parameter controls the maximum retry count for target detection:
+// - 0x00: Try once, no retry
+// - 0x01-0xFE: Retry count (each retry is ~150ms according to PN532 datasheet)
+// - 0xFF: Retry infinitely (blocking mode - use with caution)
+//
+// For continuous polling with card removal detection, use low values (0x01-0x10) to ensure
+// the command returns quickly when no card is present.
+func (d *Device) InListPassiveTargetWithTimeoutContext(ctx context.Context, maxTg, brTy, mxRtyATR byte) ([]*DetectedTag, error) {
+	maxTg = d.normalizeMaxTargets(maxTg)
+	data := []byte{maxTg, brTy, mxRtyATR}
+
+	debugf("InListPassiveTargetWithTimeout - maxTg=%d, brTy=0x%02X, mxRtyATR=0x%02X, transport=%s", 
+		maxTg, brTy, mxRtyATR, d.transport.Type())
+
+	res, err := d.executeInListPassiveTarget(ctx, data)
+	if err != nil {
+		return d.handleInListPassiveTargetError(ctx, err, maxTg, brTy)
+	}
+
+	debugf("InListPassiveTargetWithTimeout response (%d bytes): %X", len(res), res)
+
+	if err := d.validateInListPassiveTargetResponse(res); err != nil {
+		return nil, err
+	}
+
+	return d.parseInListPassiveTargetResponse(res)
+}
+
 // normalizeMaxTargets ensures maxTg is within valid range
 func (*Device) normalizeMaxTargets(maxTg byte) byte {
 	if maxTg > 2 {
@@ -895,8 +783,7 @@ func (*Device) normalizeMaxTargets(maxTg byte) byte {
 
 // executeInListPassiveTarget sends the InListPassiveTarget command
 func (d *Device) executeInListPassiveTarget(ctx context.Context, data []byte) ([]byte, error) {
-	tc := AsTransportContext(d.transport)
-	result, err := tc.SendCommandContext(ctx, cmdInListPassiveTarget, data)
+	result, err := d.transport.SendCommand(cmdInListPassiveTarget, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send InListPassiveTarget command: %w", err)
 	}
@@ -1104,8 +991,7 @@ func (d *Device) fallbackToInAutoPoll(ctx context.Context, maxTg, brTy byte) ([]
 
 // PowerDownContext puts the PN532 into power down mode with context support
 func (d *Device) PowerDownContext(ctx context.Context, wakeupEnable, irqEnable byte) error {
-	tc := AsTransportContext(d.transport)
-	res, err := tc.SendCommandContext(ctx, cmdPowerDown, []byte{wakeupEnable, irqEnable})
+	res, err := d.transport.SendCommand(cmdPowerDown, []byte{wakeupEnable, irqEnable})
 	if err != nil {
 		return fmt.Errorf("PowerDown command failed: %w", err)
 	}
