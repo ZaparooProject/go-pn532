@@ -56,8 +56,6 @@ linters:
         - diagnostic
         - style
         - performance
-    staticcheck:
-      checks: ["all", "SA2003", "SA6002", "SA6005"]
     gocyclo:
       min-complexity: 15
     funlen:

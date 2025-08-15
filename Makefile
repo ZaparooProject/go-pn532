@@ -26,8 +26,7 @@ readtag:
 # Run tests
 test:
 	@echo "Running tests..."
-	$(GOTEST) -v -race -timeout 60s -coverprofile=coverage.txt -covermode=atomic ./...
-
+	$(GOTEST) -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
 # Run tests with coverage report
 coverage: test

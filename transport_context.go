@@ -22,7 +22,6 @@ package pn532
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 )
@@ -41,122 +40,50 @@ type transportContextAdapter struct {
 	Transport
 }
 
-type commandResult struct {
-	err  error
-	data []byte
-}
-
 // SendCommandContext implements TransportContext by using the context deadline
 func (t *transportContextAdapter) SendCommandContext(ctx context.Context, cmd byte, args []byte) ([]byte, error) {
-	if err := t.checkContextCancelled(ctx); err != nil {
-		return nil, err
-	}
-
-	timeout, err := t.calculateTimeout(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := t.SetTimeout(timeout); err != nil {
-		return nil, fmt.Errorf("failed to set transport timeout: %w", err)
-	}
-
-	return t.executeCommandWithContext(ctx, cmd, args)
-}
-
-func (*transportContextAdapter) checkContextCancelled(ctx context.Context) error {
+	// Check if context is already cancelled
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("context cancelled before sending command: %w", ctx.Err())
+		return nil, fmt.Errorf("context cancelled before sending command: %w", ctx.Err())
 	default:
-		return nil
-	}
-}
-
-func (*transportContextAdapter) calculateTimeout(ctx context.Context) (time.Duration, error) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return 5 * time.Second, nil
 	}
 
-	timeout := time.Until(deadline)
-	if timeout <= 0 {
-		return 0, errors.New("context deadline already passed")
-	}
+	// If there's a deadline, set the transport timeout accordingly
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		if timeout > 0 {
+			// Save current timeout to restore later
+			oldTimeout := 5 * time.Second // Default timeout
+			defer func() {
+				_ = t.SetTimeout(oldTimeout)
+			}()
 
-	// Apply safety margin to prevent race conditions
-	if timeout > 10*time.Millisecond {
-		timeout -= 5 * time.Millisecond
-	}
-
-	return timeout, nil
-}
-
-func (t *transportContextAdapter) executeCommandWithContext(
-	ctx context.Context, cmd byte, args []byte,
-) ([]byte, error) {
-	resultChan := make(chan commandResult, 1)
-	doneChan := make(chan struct{})
-
-	var abandoned bool
-	defer t.cleanupAbandonedOperation(&abandoned, resultChan)
-
-	t.startCommandExecution(resultChan, doneChan, cmd, args)
-
-	return t.waitForCommandResult(ctx, resultChan, doneChan, &abandoned)
-}
-
-func (*transportContextAdapter) cleanupAbandonedOperation(abandoned *bool, resultChan chan commandResult) {
-	if *abandoned {
-		select {
-		case <-resultChan:
-			// Operation completed, consume result to prevent goroutine leak
-		case <-time.After(100 * time.Millisecond):
-			// Timeout waiting for goroutine cleanup
-			// Increased from 20ms to 100ms to accommodate race detection which
-			// significantly slows down goroutine execution and cleanup timing.
-			// In test scenarios with mock transports, this should be sufficient
-			// for proper cleanup even under race conditions.
+			if err := t.SetTimeout(timeout); err != nil {
+				return nil, err
+			}
 		}
 	}
-}
 
-func (t *transportContextAdapter) startCommandExecution(
-	resultChan chan commandResult, doneChan chan struct{}, cmd byte, args []byte,
-) {
+	// Create a channel for the result
+	type result struct {
+		err  error
+		data []byte
+	}
+	resultChan := make(chan result, 1)
+
+	// Run the command in a goroutine
 	go func() {
-		defer close(doneChan)
 		data, err := t.SendCommand(cmd, args)
-
-		select {
-		case resultChan <- commandResult{err, data}:
-			// Result sent successfully
-		default:
-			// Result channel full or abandoned, operation was cancelled
-		}
+		resultChan <- result{err, data}
 	}()
-}
 
-func (t *transportContextAdapter) waitForCommandResult(
-	ctx context.Context, resultChan chan commandResult, doneChan chan struct{}, abandoned *bool,
-) ([]byte, error) {
+	// Wait for either the result or context cancellation
 	select {
 	case <-ctx.Done():
-		*abandoned = true
 		return nil, fmt.Errorf("context cancelled while waiting for command response: %w", ctx.Err())
 	case res := <-resultChan:
 		return res.data, res.err
-	case <-doneChan:
-		return t.handleCompletedOperation(resultChan)
-	}
-}
-
-func (*transportContextAdapter) handleCompletedOperation(resultChan chan commandResult) ([]byte, error) {
-	select {
-	case res := <-resultChan:
-		return res.data, res.err
-	default:
-		return nil, errors.New("command completed but no result available")
 	}
 }
 

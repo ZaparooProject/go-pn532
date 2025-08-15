@@ -18,7 +18,6 @@
 // along with go-pn532; if not, write to the Free Software Foundation,
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-// Package tagops provides tag operation utilities and authentication helpers
 package tagops
 
 // Authentication is now handled automatically by the underlying MIFARE implementation

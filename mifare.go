@@ -727,9 +727,9 @@ func (t *MIFARETag) clearRemainingBlocks(startBlock uint8) error {
 func (t *MIFARETag) ResetAuthState() error {
 	// SECURITY: Thread-safe state clearing
 	t.authMutex.Lock()
-	defer t.authMutex.Unlock()
 	t.lastAuthSector = -1
 	t.lastAuthKeyType = 0
+	t.authMutex.Unlock()
 
 	// Force PN532 to reset by attempting to re-detect the tag
 	// This clears any internal authentication state in the PN532 chip
@@ -769,20 +769,18 @@ func (t *MIFARETag) Authenticate(sector uint8, keyType byte, key []byte) error {
 	_, err := t.device.SendDataExchange(cmd)
 	if err != nil {
 		// SECURITY: Thread-safe state clearing on failure
-		func() {
-			t.authMutex.Lock()
-			defer t.authMutex.Unlock()
-			t.lastAuthSector = -1
-			t.lastAuthKeyType = 0
-		}()
+		t.authMutex.Lock()
+		t.lastAuthSector = -1
+		t.lastAuthKeyType = 0
+		t.authMutex.Unlock()
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
 	// SECURITY: Thread-safe state update on success
 	t.authMutex.Lock()
-	defer t.authMutex.Unlock()
 	t.lastAuthSector = int(sector)
 	t.lastAuthKeyType = keyType
+	t.authMutex.Unlock()
 
 	return nil
 }
@@ -804,12 +802,10 @@ func (t *MIFARETag) AuthenticateRobust(sector uint8, keyType byte, key []byte) e
 	// If standard auth failed, try Chinese clone unlock sequences
 	if t.tryChineseCloneUnlock(sector) {
 		// Clone unlock successful, tag is accessible without auth
-		func() {
-			t.authMutex.Lock()
-			defer t.authMutex.Unlock()
-			t.lastAuthSector = int(sector)
-			t.lastAuthKeyType = keyType
-		}()
+		t.authMutex.Lock()
+		t.lastAuthSector = int(sector)
+		t.lastAuthKeyType = keyType
+		t.authMutex.Unlock()
 		return nil
 	}
 
@@ -878,12 +874,10 @@ func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
 		}
 
 		// Clear authentication state
-		func() {
-			t.authMutex.Lock()
-			defer t.authMutex.Unlock()
-			t.lastAuthSector = -1
-			t.lastAuthKeyType = 0
-		}()
+		t.authMutex.Lock()
+		t.lastAuthSector = -1
+		t.lastAuthKeyType = 0
+		t.authMutex.Unlock()
 
 		return nil
 
@@ -899,12 +893,10 @@ func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
 			time.Sleep(50 * time.Millisecond)
 		}
 
-		func() {
-			t.authMutex.Lock()
-			defer t.authMutex.Unlock()
-			t.lastAuthSector = -1
-			t.lastAuthKeyType = 0
-		}()
+		t.authMutex.Lock()
+		t.lastAuthSector = -1
+		t.lastAuthKeyType = 0
+		t.authMutex.Unlock()
 
 		return nil
 

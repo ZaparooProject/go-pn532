@@ -18,7 +18,6 @@
 // along with go-pn532; if not, write to the Free Software Foundation,
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-// Package detection provides device detection and management functionality for PN532 devices
 package detection
 
 import (

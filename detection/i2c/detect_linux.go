@@ -1,6 +1,5 @@
 //go:build linux
 
-// Package i2c provides I2C device detection functionality for Linux systems
 package i2c
 
 import (
