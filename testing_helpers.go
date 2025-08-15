@@ -31,6 +31,7 @@ type BlockingMockTransport struct {
 	blockChan    chan struct{}
 	ResponseFunc func(cmd byte, data []byte) ([]byte, error)
 	Response     []byte
+	timeout      time.Duration
 	mu           sync.Mutex
 	closed       bool
 }
@@ -39,23 +40,32 @@ type BlockingMockTransport struct {
 func NewBlockingMockTransport() *BlockingMockTransport {
 	return &BlockingMockTransport{
 		blockChan: make(chan struct{}),
+		timeout:   5 * time.Second, // Default timeout
 	}
 }
 
-// SendCommand blocks until Unblock() is called or the transport is closed
+// SendCommand blocks until Unblock() is called, timeout expires, or the transport is closed
 func (m *BlockingMockTransport) SendCommand(cmd byte, data []byte) ([]byte, error) {
 	m.mu.Lock()
 	blockChan := m.blockChan
 	closed := m.closed
 	responseFunc := m.ResponseFunc
 	response := m.Response
+	timeout := m.timeout
 	m.mu.Unlock()
 
 	if closed {
 		return nil, ErrTransportRead
 	}
 
-	<-blockChan
+	// Wait for either unblock signal or timeout
+	select {
+	case <-blockChan:
+		// Operation was unblocked, proceed normally
+	case <-time.After(timeout):
+		// Timeout occurred, return timeout error
+		return nil, NewTimeoutError("SendCommand", "mock")
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -112,8 +122,11 @@ func (m *BlockingMockTransport) SetResponseFunc(fn func(cmd byte, data []byte) (
 	m.Response = nil
 }
 
-// SetTimeout is a no-op for this mock
-func (*BlockingMockTransport) SetTimeout(_ time.Duration) error {
+// SetTimeout configures the timeout for blocking operations
+func (m *BlockingMockTransport) SetTimeout(timeout time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.timeout = timeout
 	return nil
 }
 
