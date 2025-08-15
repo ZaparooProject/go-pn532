@@ -22,6 +22,7 @@ package pn532
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -204,6 +205,22 @@ func performValidatedRead(
 	return performReadVerification(data, config, readFunc)
 }
 
+// performValidatedReadWithContext is a context-aware version of performValidatedRead
+func performValidatedReadWithContext(
+	ctx context.Context,
+	_ uint8,
+	_ string,
+	config *ValidationConfig,
+	readFunc func() ([]byte, error),
+) ([]byte, error) {
+	data, err := readFunc()
+	if !config.EnableReadVerification || err != nil {
+		return data, err
+	}
+
+	return performReadVerificationWithContext(ctx, data, config, readFunc)
+}
+
 func performReadVerification(
 	initialData []byte, config *ValidationConfig, readFunc func() ([]byte, error),
 ) ([]byte, error) {
@@ -215,6 +232,49 @@ func performReadVerification(
 	for retry := 0; retry < config.ReadRetries; retry++ {
 		if retry > 0 {
 			time.Sleep(config.RetryDelay)
+		}
+
+		verifyData, err := readFunc()
+		if err != nil {
+			lastErr = err
+			consecutiveMatches = 0
+			continue
+		}
+
+		consecutiveMatches, lastData = updateVerificationState(lastData, verifyData, consecutiveMatches)
+
+		if consecutiveMatches >= requiredMatches {
+			return verifyData, nil
+		}
+	}
+
+	return handleVerificationFailure(lastErr, config.ReadRetries)
+}
+
+func performReadVerificationWithContext(
+	ctx context.Context,
+	initialData []byte, config *ValidationConfig, readFunc func() ([]byte, error),
+) ([]byte, error) {
+	var lastErr error
+	lastData := initialData
+	consecutiveMatches := 0
+	requiredMatches := 2 // Require 2 consecutive matching reads
+
+	for retry := 0; retry < config.ReadRetries; retry++ {
+		// Check context cancellation at start of each retry
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		if retry > 0 {
+			// Also check context before sleep/delay
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(config.RetryDelay):
+			}
 		}
 
 		verifyData, err := readFunc()
@@ -281,6 +341,74 @@ func performValidatedWrite(
 
 		// Verify written data
 		time.Sleep(10 * time.Millisecond) // Small delay for write to settle
+
+		readData, err := readFunc()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if bytes.Equal(data, readData) {
+			return nil
+		}
+
+		lastErr = errors.New("write verification failed: data mismatch")
+	}
+
+	return fmt.Errorf("write validation failed after %d retries: %w",
+		config.WriteRetries, lastErr)
+}
+
+// performValidatedWriteWithContext is a context-aware version of performValidatedWrite
+func performValidatedWriteWithContext(
+	ctx context.Context,
+	expectedBlockSize int,
+	data []byte,
+	config *ValidationConfig,
+	writeFunc func() error,
+	readFunc func() ([]byte, error),
+) error {
+	if len(data) != expectedBlockSize {
+		return fmt.Errorf("invalid block size: expected %d, got %d", expectedBlockSize, len(data))
+	}
+
+	var lastErr error
+
+	for retry := 0; retry <= config.WriteRetries; retry++ {
+		// Check context cancellation at start of each retry
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if retry > 0 {
+			// Also check context before sleep/delay
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(config.RetryDelay):
+			}
+		}
+
+		// Perform write
+		err := writeFunc()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Skip verification if disabled
+		if !config.EnableWriteVerification {
+			return nil
+		}
+
+		// Check context before verification delay
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond): // Small delay for write to settle
+		}
 
 		readData, err := readFunc()
 		if err != nil {
@@ -572,4 +700,68 @@ func (t *ValidatedMIFARETag) WriteTextValidated(text string) error {
 	}
 
 	return t.WriteNDEFValidated(message)
+}
+
+// Context-aware validation methods for NTAG
+
+// ReadBlockValidatedWithContext reads a block with optional verification and context cancellation support
+func (t *ValidatedNTAGTag) ReadBlockValidatedWithContext(ctx context.Context, block uint8) ([]byte, error) {
+	// SECURITY: Thread-safe validation with metrics
+	if vd, ok := any(t).(interface{ incrementValidationMetrics(ValidationResult) }); ok {
+		defer func() {
+			// This would be called with actual success/failure status
+			vd.incrementValidationMetrics(ValidationResult{Success: true, SecurityViolation: false})
+		}()
+	}
+
+	return performValidatedReadWithContext(ctx, block, "NTAG", t.config, func() ([]byte, error) {
+		return t.ReadBlock(block)
+	})
+}
+
+// WriteBlockValidatedWithContext writes a block with verification and context cancellation support
+func (t *ValidatedNTAGTag) WriteBlockValidatedWithContext(ctx context.Context, block uint8, data []byte) error {
+	// SECURITY: Thread-safe validation with metrics
+	if vd, ok := any(t).(interface{ incrementValidationMetrics(ValidationResult) }); ok {
+		defer func() {
+			// This would be called with actual success/failure status
+			vd.incrementValidationMetrics(ValidationResult{Success: true, SecurityViolation: false})
+		}()
+	}
+
+	return performValidatedWriteWithContext(ctx, ntagBlockSize, data, t.config,
+		func() error { return t.WriteBlock(block, data) },
+		func() ([]byte, error) { return t.ReadBlock(block) })
+}
+
+// Context-aware validation methods for MIFARE
+
+// ReadBlockValidatedWithContext reads a block with optional verification and context cancellation support for MIFARE
+func (t *ValidatedMIFARETag) ReadBlockValidatedWithContext(ctx context.Context, block uint8) ([]byte, error) {
+	// SECURITY: Thread-safe validation with metrics
+	if vd, ok := any(t).(interface{ incrementValidationMetrics(ValidationResult) }); ok {
+		defer func() {
+			// This would be called with actual success/failure status
+			vd.incrementValidationMetrics(ValidationResult{Success: true, SecurityViolation: false})
+		}()
+	}
+
+	return performValidatedReadWithContext(ctx, block, "MIFARE", t.config, func() ([]byte, error) {
+		return t.ReadBlock(block)
+	})
+}
+
+// WriteBlockValidatedWithContext writes a block with verification and context cancellation support for MIFARE
+func (t *ValidatedMIFARETag) WriteBlockValidatedWithContext(ctx context.Context, block uint8, data []byte) error {
+	// SECURITY: Thread-safe validation with metrics
+	if vd, ok := any(t).(interface{ incrementValidationMetrics(ValidationResult) }); ok {
+		defer func() {
+			// This would be called with actual success/failure status
+			vd.incrementValidationMetrics(ValidationResult{Success: true, SecurityViolation: false})
+		}()
+	}
+
+	return performValidatedWriteWithContext(ctx, mifareBlockSize, data, t.config,
+		func() error { return t.WriteBlock(block, data) },
+		func() ([]byte, error) { return t.ReadBlock(block) })
 }

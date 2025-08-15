@@ -49,41 +49,79 @@ func (t *transportContextAdapter) SendCommandContext(ctx context.Context, cmd by
 	default:
 	}
 
-	// If there's a deadline, set the transport timeout accordingly
+	// Calculate timeout with safety margin
+	var timeout time.Duration
 	if deadline, ok := ctx.Deadline(); ok {
-		timeout := time.Until(deadline)
-		if timeout > 0 {
-			// Save current timeout to restore later
-			oldTimeout := 5 * time.Second // Default timeout
-			defer func() {
-				_ = t.SetTimeout(oldTimeout)
-			}()
-
-			if err := t.SetTimeout(timeout); err != nil {
-				return nil, err
-			}
+		timeout = time.Until(deadline)
+		if timeout <= 0 {
+			return nil, fmt.Errorf("context deadline already passed")
 		}
+		// Apply safety margin to prevent race conditions
+		if timeout > 10*time.Millisecond {
+			timeout = timeout - 5*time.Millisecond
+		}
+	} else {
+		// No deadline, use reasonable default
+		timeout = 5 * time.Second
 	}
 
-	// Create a channel for the result
+	// Set the transport timeout
+	if err := t.SetTimeout(timeout); err != nil {
+		return nil, fmt.Errorf("failed to set transport timeout: %w", err)
+	}
+
+	// Create channels for result and cancellation coordination
 	type result struct {
 		err  error
 		data []byte
 	}
 	resultChan := make(chan result, 1)
+	doneChan := make(chan struct{})
 
-	// Run the command in a goroutine
+	// Track if we need to abandon the operation
+	var abandoned bool
+	defer func() {
+		if abandoned {
+			// Give the goroutine a moment to finish naturally
+			select {
+			case <-resultChan:
+				// Operation completed, consume result to prevent goroutine leak
+			case <-time.After(10 * time.Millisecond):
+				// Timeout waiting for goroutine, it's truly hung
+			}
+		}
+	}()
+
+	// Run the command in a goroutine with proper cleanup
 	go func() {
+		defer close(doneChan)
 		data, err := t.SendCommand(cmd, args)
-		resultChan <- result{err, data}
+
+		// Check if we should still report the result
+		select {
+		case resultChan <- result{err, data}:
+			// Result sent successfully
+		default:
+			// Result channel full or abandoned, operation was cancelled
+		}
 	}()
 
 	// Wait for either the result or context cancellation
 	select {
 	case <-ctx.Done():
+		abandoned = true
 		return nil, fmt.Errorf("context cancelled while waiting for command response: %w", ctx.Err())
 	case res := <-resultChan:
 		return res.data, res.err
+	case <-doneChan:
+		// Goroutine finished, try to get result
+		select {
+		case res := <-resultChan:
+			return res.data, res.err
+		default:
+			// This shouldn't happen, but handle gracefully
+			return nil, fmt.Errorf("command completed but no result available")
+		}
 	}
 }
 

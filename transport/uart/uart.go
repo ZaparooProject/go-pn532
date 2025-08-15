@@ -56,7 +56,8 @@ type Transport struct {
 	port        serial.Port
 	portName    string
 	mu          sync.Mutex
-	lastCommand byte // Track last command for special handling
+	timeoutMu   sync.RWMutex // Separate mutex for timeout operations
+	lastCommand byte         // Track last command for special handling
 }
 
 // New creates a new UART transport.
@@ -86,12 +87,12 @@ func New(portName string) (*Transport, error) {
 
 // SendCommand sends a command to the PN532 and waits for response.
 func (t *Transport) SendCommand(cmd byte, args []byte) ([]byte, error) {
+	// Use a much smaller critical section - only protect command tracking
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Track the command for special handling
 	t.lastCommand = cmd
+	t.mu.Unlock()
 
+	// All I/O operations happen outside of mutex protection to prevent deadlocks
 	ackData, err := t.sendFrame(cmd, args)
 	if err != nil {
 		return nil, err
@@ -129,8 +130,8 @@ func (t *Transport) SendCommand(cmd byte, args []byte) ([]byte, error) {
 
 // SetTimeout sets the read timeout for the transport
 func (t *Transport) SetTimeout(timeout time.Duration) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.timeoutMu.Lock()
+	defer t.timeoutMu.Unlock()
 	err := t.port.SetReadTimeout(timeout)
 	if err != nil {
 		return fmt.Errorf("UART set timeout failed: %w", err)
@@ -241,6 +242,8 @@ func (t *Transport) sendNack() error {
 func (t *Transport) waitAck() ([]byte, error) {
 	tries := 0
 	maxTries := 32 // bytes to scan through
+	startTime := time.Now()
+	maxWaitTime := 5 * time.Second // Maximum total wait time to prevent infinite loops
 
 	// Use buffer pool for ACK processing - reduces small allocations
 	buf := frame.GetSmallBuffer(1)
@@ -255,6 +258,11 @@ func (t *Transport) waitAck() ([]byte, error) {
 	preAck = preAck[:0] // Reset length
 
 	for {
+		// Check total elapsed time to prevent infinite waiting
+		if time.Since(startTime) > maxWaitTime {
+			return preAck, pn532.NewTimeoutError("waitAck", t.portName)
+		}
+
 		if tries >= maxTries {
 			return preAck, pn532.NewNoACKError("waitAck", t.portName)
 		}
@@ -264,6 +272,12 @@ func (t *Transport) waitAck() ([]byte, error) {
 			return preAck, fmt.Errorf("UART ACK read failed: %w", err)
 		} else if n == 0 {
 			tries++
+			// Add backoff when getting consecutive zero bytes to prevent CPU spinning
+			if tries > 5 {
+				// Progressive backoff: starts at 1ms, doubles up to 8ms max
+				backoffMs := min(1<<(tries-5), 8)
+				time.Sleep(time.Duration(backoffMs) * time.Millisecond)
+			}
 			continue
 		}
 
