@@ -39,7 +39,10 @@ jobs:
       run: go mod download
     
     - name: Run tests
-      run: go test -v -race ./...
+      run: go test -v -race -timeout 60s ./...
+      
+    - name: Run deadlock detection tests
+      run: go test -v -timeout 30s -tags deadlock ./...
 
   lint:
     runs-on: ubuntu-latest

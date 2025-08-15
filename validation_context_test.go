@@ -62,13 +62,13 @@ func TestValidationContextCancellation(t *testing.T) {
 // mockTransportCtx for context testing
 type mockTransportCtx struct{}
 
-func (m *mockTransportCtx) SendCommand(cmd byte, args []byte) ([]byte, error) {
+func (*mockTransportCtx) SendCommand(_ byte, _ []byte) ([]byte, error) {
 	// Simulate slow operation
 	time.Sleep(100 * time.Millisecond)
 	return []byte{0x00, 0xFF, 0x00}, nil
 }
 
-func (m *mockTransportCtx) Close() error                           { return nil }
-func (m *mockTransportCtx) SetTimeout(timeout time.Duration) error { return nil }
-func (m *mockTransportCtx) IsConnected() bool                      { return true }
-func (m *mockTransportCtx) Type() TransportType                    { return TransportMock }
+func (*mockTransportCtx) Close() error                     { return nil }
+func (*mockTransportCtx) SetTimeout(_ time.Duration) error { return nil }
+func (*mockTransportCtx) IsConnected() bool                { return true }
+func (*mockTransportCtx) Type() TransportType              { return TransportMock }

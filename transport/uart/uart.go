@@ -18,6 +18,7 @@
 // along with go-pn532; if not, write to the Free Software Foundation,
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+// Package uart provides UART transport implementation for PN532 communication
 package uart
 
 import (
@@ -240,68 +241,99 @@ func (t *Transport) sendNack() error {
 // waitAck waits for an ACK frame, returning any extra data received before it
 // This handles the Windows driver bug where ACK packets may be delivered out of order
 func (t *Transport) waitAck() ([]byte, error) {
-	tries := 0
-	maxTries := 32 // bytes to scan through
-	startTime := time.Now()
-	maxWaitTime := 5 * time.Second // Maximum total wait time to prevent infinite loops
-
-	// Use buffer pool for ACK processing - reduces small allocations
-	buf := frame.GetSmallBuffer(1)
-	defer frame.PutBuffer(buf)
-
-	ackBuf := frame.GetSmallBuffer(6) // ACK is 6 bytes
-	defer frame.PutBuffer(ackBuf)
-	ackBuf = ackBuf[:0] // Reset length
-
-	preAck := frame.GetSmallBuffer(16) // Pre-ACK data buffer
-	defer frame.PutBuffer(preAck)
-	preAck = preAck[:0] // Reset length
+	state := &waitAckState{
+		tries:       0,
+		maxTries:    32,
+		startTime:   time.Now(),
+		maxWaitTime: 5 * time.Second,
+		buf:         frame.GetSmallBuffer(1),
+		ackBuf:      frame.GetSmallBuffer(6)[:0],
+		preAck:      frame.GetSmallBuffer(16)[:0],
+		transport:   t,
+	}
+	defer t.cleanupWaitAckBuffers(state)
 
 	for {
-		// Check total elapsed time to prevent infinite waiting
-		if time.Since(startTime) > maxWaitTime {
-			return preAck, pn532.NewTimeoutError("waitAck", t.portName)
+		if result, shouldReturn, err := t.checkWaitAckTimeouts(state); shouldReturn {
+			return result, err
 		}
 
-		if tries >= maxTries {
-			return preAck, pn532.NewNoACKError("waitAck", t.portName)
+		if result, shouldReturn, err := t.readAndProcessAckByte(state); shouldReturn {
+			return result, err
 		}
-
-		n, err := t.port.Read(buf)
-		if err != nil {
-			return preAck, fmt.Errorf("UART ACK read failed: %w", err)
-		} else if n == 0 {
-			tries++
-			// Add backoff when getting consecutive zero bytes to prevent CPU spinning
-			if tries > 5 {
-				// Progressive backoff: starts at 1ms, doubles up to 8ms max
-				backoffMs := min(1<<(tries-5), 8)
-				time.Sleep(time.Duration(backoffMs) * time.Millisecond)
-			}
-			continue
-		}
-
-		// Debug what we're reading in waitAck
-		_ = tries // For potential future debugging
-
-		ackBuf = append(ackBuf, buf[0])
-		if len(ackBuf) < 6 {
-			continue
-		}
-
-		if bytes.Equal(ackBuf, ackFrame) {
-			// Copy preAck data to new buffer for return since we'll release the pooled buffer
-			if len(preAck) == 0 {
-				return []byte{}, nil
-			}
-			result := make([]byte, len(preAck))
-			copy(result, preAck)
-			return result, nil
-		}
-		preAck = append(preAck, ackBuf[0])
-		ackBuf = ackBuf[1:]
-		tries++
 	}
+}
+
+type waitAckState struct {
+	startTime   time.Time
+	transport   *Transport
+	buf         []byte
+	ackBuf      []byte
+	preAck      []byte
+	tries       int
+	maxTries    int
+	maxWaitTime time.Duration
+}
+
+func (*Transport) cleanupWaitAckBuffers(state *waitAckState) {
+	frame.PutBuffer(state.buf)
+	frame.PutBuffer(state.ackBuf)
+	frame.PutBuffer(state.preAck)
+}
+
+func (t *Transport) checkWaitAckTimeouts(state *waitAckState) (result []byte, shouldReturn bool, err error) {
+	if time.Since(state.startTime) > state.maxWaitTime {
+		return state.preAck, true, pn532.NewTimeoutError("waitAck", t.portName)
+	}
+
+	if state.tries >= state.maxTries {
+		return state.preAck, true, pn532.NewNoACKError("waitAck", t.portName)
+	}
+
+	return nil, false, nil
+}
+
+func (t *Transport) readAndProcessAckByte(state *waitAckState) (result []byte, shouldReturn bool, err error) {
+	n, err := t.port.Read(state.buf)
+	if err != nil {
+		return state.preAck, true, fmt.Errorf("UART ACK read failed: %w", err)
+	}
+
+	if n == 0 {
+		return t.handleZeroRead(state)
+	}
+
+	return t.processAckByte(state)
+}
+
+func (*Transport) handleZeroRead(state *waitAckState) (result []byte, shouldReturn bool, err error) {
+	state.tries++
+	if state.tries > 5 {
+		backoffMs := min(1<<(state.tries-5), 8)
+		time.Sleep(time.Duration(backoffMs) * time.Millisecond)
+	}
+	return nil, false, nil
+}
+
+func (*Transport) processAckByte(state *waitAckState) (result []byte, shouldReturn bool, err error) {
+	state.ackBuf = append(state.ackBuf, state.buf[0])
+	if len(state.ackBuf) < 6 {
+		return nil, false, nil
+	}
+
+	if bytes.Equal(state.ackBuf, ackFrame) {
+		if len(state.preAck) == 0 {
+			return []byte{}, true, nil
+		}
+		result := make([]byte, len(state.preAck))
+		copy(result, state.preAck)
+		return result, true, nil
+	}
+
+	state.preAck = append(state.preAck, state.ackBuf[0])
+	state.ackBuf = state.ackBuf[1:]
+	state.tries++
+	return nil, false, nil
 }
 
 // sendFrame sends a frame to the PN532

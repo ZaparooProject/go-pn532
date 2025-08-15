@@ -31,21 +31,51 @@ import (
 
 // mockHangingTransport simulates a transport that hangs on SendCommand
 type mockHangingTransport struct {
+	cancelled    chan struct{}
 	hangDuration time.Duration
-	callCount    int32
 	mu           sync.Mutex
+	callCount    int32
 }
 
-func (m *mockHangingTransport) SendCommand(cmd byte, args []byte) ([]byte, error) {
+func newMockHangingTransport(duration time.Duration) *mockHangingTransport {
+	return &mockHangingTransport{
+		hangDuration: duration,
+		cancelled:    make(chan struct{}),
+	}
+}
+
+func (m *mockHangingTransport) SendCommand(_ byte, _ []byte) ([]byte, error) {
 	atomic.AddInt32(&m.callCount, 1)
-	time.Sleep(m.hangDuration)
-	return []byte{0x01, 0x02}, nil
+
+	// Use a timer that can be interrupted instead of time.Sleep
+	timer := time.NewTimer(m.hangDuration)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return []byte{0x01, 0x02}, nil
+	case <-m.cancelled:
+		return nil, errors.New("transport cancelled")
+	}
 }
 
-func (m *mockHangingTransport) Close() error                           { return nil }
-func (m *mockHangingTransport) SetTimeout(timeout time.Duration) error { return nil }
-func (m *mockHangingTransport) IsConnected() bool                      { return true }
-func (m *mockHangingTransport) Type() TransportType                    { return TransportMock }
+func (m *mockHangingTransport) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Only close once
+	select {
+	case <-m.cancelled:
+		// Already closed
+		return nil
+	default:
+		close(m.cancelled)
+		return nil
+	}
+}
+func (*mockHangingTransport) SetTimeout(_ time.Duration) error { return nil }
+func (*mockHangingTransport) IsConnected() bool                { return true }
+func (*mockHangingTransport) Type() TransportType              { return TransportMock }
 
 func (m *mockHangingTransport) CallCount() int32 {
 	return atomic.LoadInt32(&m.callCount)
@@ -54,6 +84,7 @@ func (m *mockHangingTransport) CallCount() int32 {
 // TestSendCommandContext_CancellationPreventsHang tests that context cancellation
 // prevents the hanging goroutine problem described in the bug report
 func TestSendCommandContext_CancellationPreventsHang(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		hangDuration time.Duration
@@ -82,43 +113,74 @@ func TestSendCommandContext_CancellationPreventsHang(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockTransport := &mockHangingTransport{hangDuration: tt.hangDuration}
-			transportCtx := AsTransportContext(mockTransport)
-
-			ctx, cancel := context.WithTimeout(context.Background(), tt.ctxTimeout)
-			defer cancel()
-
-			startTime := time.Now()
-			result, err := transportCtx.SendCommandContext(ctx, 0x01, []byte{0x02})
-			elapsed := time.Since(startTime)
-
+			t.Parallel()
+			expectation := expectSuccess
 			if tt.expectErr {
-				if err == nil {
-					t.Errorf("expected error due to cancellation, got nil")
-				}
-				if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-					t.Errorf("expected context cancellation error, got: %v", err)
-				}
-				// Should return quickly due to cancellation
-				if elapsed > tt.ctxTimeout+20*time.Millisecond {
-					t.Errorf("cancellation took too long: %v (expected ~%v)", elapsed, tt.ctxTimeout)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-				if result == nil {
-					t.Errorf("expected result, got nil")
-				}
+				expectation = expectError
 			}
+			runCancellationTest(t, tt.hangDuration, tt.ctxTimeout, expectation)
 		})
+	}
+}
+
+type testExpectation int
+
+const (
+	expectSuccess testExpectation = iota
+	expectError
+)
+
+func runCancellationTest(t *testing.T, hangDuration, ctxTimeout time.Duration, expectation testExpectation) {
+	mockTransport := newMockHangingTransport(hangDuration)
+	defer func() { _ = mockTransport.Close() }()
+	transportCtx := AsTransportContext(mockTransport)
+
+	ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
+	defer cancel()
+
+	startTime := time.Now()
+	result, err := transportCtx.SendCommandContext(ctx, 0x01, []byte{0x02})
+	elapsed := time.Since(startTime)
+
+	switch expectation {
+	case expectError:
+		validateCancellationError(t, err, elapsed, ctxTimeout)
+	case expectSuccess:
+		validateSuccessfulResult(t, err, result)
+	}
+}
+
+func validateCancellationError(t *testing.T, err error, elapsed, ctxTimeout time.Duration) {
+	if err == nil {
+		t.Error("expected error due to cancellation, got nil")
+		return
+	}
+
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context cancellation error, got: %v", err)
+	}
+
+	// Should return quickly due to cancellation
+	if elapsed > ctxTimeout+20*time.Millisecond {
+		t.Errorf("cancellation took too long: %v (expected ~%v)", elapsed, ctxTimeout)
+	}
+}
+
+func validateSuccessfulResult(t *testing.T, err error, result []byte) {
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Error("expected result, got nil")
 	}
 }
 
 // TestSendCommandContext_PollingScenario simulates the polling scenario
 // that was causing the original bug
 func TestSendCommandContext_PollingScenario(t *testing.T) {
-	mockTransport := &mockHangingTransport{hangDuration: 100 * time.Millisecond}
+	t.Parallel()
+	mockTransport := newMockHangingTransport(100 * time.Millisecond)
+	defer func() { _ = mockTransport.Close() }()
 	transportCtx := AsTransportContext(mockTransport)
 
 	// Simulate rapid polling with short timeouts like in monitoring.go
@@ -151,7 +213,9 @@ func TestSendCommandContext_PollingScenario(t *testing.T) {
 // TestSendCommandContext_NoDeadlineGoroutineCleanup tests proper cleanup
 // when no deadline is set but context is cancelled
 func TestSendCommandContext_NoDeadlineGoroutineCleanup(t *testing.T) {
-	mockTransport := &mockHangingTransport{hangDuration: 200 * time.Millisecond}
+	t.Parallel()
+	mockTransport := newMockHangingTransport(200 * time.Millisecond)
+	defer func() { _ = mockTransport.Close() }()
 	transportCtx := AsTransportContext(mockTransport)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -167,7 +231,7 @@ func TestSendCommandContext_NoDeadlineGoroutineCleanup(t *testing.T) {
 	elapsed := time.Since(startTime)
 
 	if err == nil {
-		t.Errorf("expected cancellation error, got nil")
+		t.Error("expected cancellation error, got nil")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
@@ -182,7 +246,9 @@ func TestSendCommandContext_NoDeadlineGoroutineCleanup(t *testing.T) {
 // TestSendCommandContext_GoroutineCleanup verifies that abandoned goroutines
 // are properly handled and don't cause resource leaks
 func TestSendCommandContext_GoroutineCleanup(t *testing.T) {
-	mockTransport := &mockHangingTransport{hangDuration: 500 * time.Millisecond}
+	t.Parallel()
+	mockTransport := newMockHangingTransport(500 * time.Millisecond)
+	defer func() { _ = mockTransport.Close() }()
 	transportCtx := AsTransportContext(mockTransport)
 
 	// Start many operations that will be cancelled
