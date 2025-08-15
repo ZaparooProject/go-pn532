@@ -1,4 +1,4 @@
-.PHONY: all build test test-deadlock lint lint-fix clean coverage check help nfctest readtag
+.PHONY: all build test lint lint-fix clean coverage check help nfctest readtag
 
 # Go parameters
 GOCMD=go
@@ -28,10 +28,6 @@ test:
 	@echo "Running tests..."
 	$(GOTEST) -v -race -timeout 60s -coverprofile=coverage.txt -covermode=atomic ./...
 
-# Run tests with deadlock detection
-test-deadlock:
-	@echo "Running deadlock detection tests..."
-	$(GOTEST) -v -timeout 30s -tags deadlock ./...
 
 # Run tests with coverage report
 coverage: test

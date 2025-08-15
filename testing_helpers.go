@@ -21,135 +21,48 @@
 package pn532
 
 import (
-	"sync"
 	"time"
 )
 
-// BlockingMockTransport is a simple mock transport that can block operations on demand
-// This is used for testing deadlock scenarios and context cancellation
-type BlockingMockTransport struct {
-	blockChan    chan struct{}
-	ResponseFunc func(cmd byte, data []byte) ([]byte, error)
-	Response     []byte
-	timeout      time.Duration
-	mu           sync.Mutex
-	closed       bool
+// SimpleMockTransport is a basic mock transport for testing
+type SimpleMockTransport struct {
+	Error    error
+	Response []byte
 }
 
-// NewBlockingMockTransport creates a new blocking mock transport
-func NewBlockingMockTransport() *BlockingMockTransport {
-	return &BlockingMockTransport{
-		blockChan: make(chan struct{}),
-		timeout:   5 * time.Second, // Default timeout
+// NewSimpleMockTransport creates a new simple mock transport
+func NewSimpleMockTransport() *SimpleMockTransport {
+	return &SimpleMockTransport{
+		Response: []byte{0x01, 0x02}, // Default response
 	}
 }
 
-// SendCommand blocks until Unblock() is called, timeout expires, or the transport is closed
-func (m *BlockingMockTransport) SendCommand(cmd byte, data []byte) ([]byte, error) {
-	m.mu.Lock()
-	blockChan := m.blockChan
-	closed := m.closed
-	responseFunc := m.ResponseFunc
-	response := m.Response
-	timeout := m.timeout
-	m.mu.Unlock()
-
-	if closed {
-		return nil, ErrTransportRead
+// SendCommand returns the configured response or error
+func (m *SimpleMockTransport) SendCommand(_ byte, _ []byte) ([]byte, error) {
+	if m.Error != nil {
+		return nil, m.Error
 	}
-
-	// Wait for either unblock signal or timeout
-	select {
-	case <-blockChan:
-		// Operation was unblocked, proceed normally
-	case <-time.After(timeout):
-		// Timeout occurred, return timeout error
-		return nil, NewTimeoutError("SendCommand", "mock")
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed {
-		return nil, ErrTransportRead
-	}
-
-	// Use configurable response logic
-	if responseFunc != nil {
-		return responseFunc(cmd, data)
-	}
-	if response != nil {
-		return append([]byte(nil), response...), nil
-	}
-
-	// Default response for backward compatibility
-	return []byte{0x01, 0x02}, nil
+	return append([]byte(nil), m.Response...), nil
 }
 
-// Unblock allows one blocked SendCommand to proceed
-func (m *BlockingMockTransport) Unblock() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.closed {
-		close(m.blockChan)
-		m.blockChan = make(chan struct{})
-	}
-}
-
-// Close unblocks all operations and marks transport as closed
-func (m *BlockingMockTransport) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.closed {
-		m.closed = true
-		close(m.blockChan)
-	}
-	return nil
-}
-
-// SetResponse configures a fixed response for all SendCommand calls
-func (m *BlockingMockTransport) SetResponse(response []byte) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// SetResponse configures the response to return
+func (m *SimpleMockTransport) SetResponse(response []byte) {
 	m.Response = response
-	m.ResponseFunc = nil
 }
 
-// SetResponseFunc configures a dynamic response function for SendCommand calls
-func (m *BlockingMockTransport) SetResponseFunc(fn func(cmd byte, data []byte) ([]byte, error)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ResponseFunc = fn
-	m.Response = nil
+// SetError configures an error to return
+func (m *SimpleMockTransport) SetError(err error) {
+	m.Error = err
 }
 
-// SetTimeout configures the timeout for blocking operations
-func (m *BlockingMockTransport) SetTimeout(timeout time.Duration) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.timeout = timeout
-	return nil
-}
+// Close implements Transport interface
+func (*SimpleMockTransport) Close() error { return nil }
 
-// IsConnected always returns true for this mock
-func (m *BlockingMockTransport) IsConnected() bool {
-	return !m.closed
-}
+// SetTimeout implements Transport interface
+func (*SimpleMockTransport) SetTimeout(_ time.Duration) error { return nil }
 
-// Type returns TransportMock
-func (*BlockingMockTransport) Type() TransportType {
-	return TransportMock
-}
+// IsConnected implements Transport interface
+func (*SimpleMockTransport) IsConnected() bool { return true }
 
-// NewBlockingMockTransportWithResponse creates a mock transport with a predefined response
-func NewBlockingMockTransportWithResponse(response []byte) *BlockingMockTransport {
-	mock := NewBlockingMockTransport()
-	mock.SetResponse(response)
-	return mock
-}
-
-// NewBlockingMockTransportWithFunc creates a mock transport with a response function
-func NewBlockingMockTransportWithFunc(fn func(cmd byte, data []byte) ([]byte, error)) *BlockingMockTransport {
-	mock := NewBlockingMockTransport()
-	mock.SetResponseFunc(fn)
-	return mock
-}
+// Type implements Transport interface
+func (*SimpleMockTransport) Type() TransportType { return TransportMock }

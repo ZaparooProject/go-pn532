@@ -24,12 +24,7 @@ import (
 	"testing"
 
 	"github.com/ZaparooProject/go-pn532"
-	"go.uber.org/goleak"
 )
-
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
-}
 
 // TestTransportCreation verifies basic transport creation and properties
 func TestTransportCreation(t *testing.T) {

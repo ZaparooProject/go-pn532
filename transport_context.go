@@ -111,11 +111,12 @@ func (*transportContextAdapter) cleanupAbandonedOperation(abandoned *bool, resul
 		select {
 		case <-resultChan:
 			// Operation completed, consume result to prevent goroutine leak
-		case <-time.After(20 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond):
 			// Timeout waiting for goroutine cleanup
-			// At this point, the goroutine might still be running, but we've waited
-			// a reasonable amount of time. In test scenarios with mock transports,
-			// this should be sufficient for proper cleanup.
+			// Increased from 20ms to 100ms to accommodate race detection which
+			// significantly slows down goroutine execution and cleanup timing.
+			// In test scenarios with mock transports, this should be sufficient
+			// for proper cleanup even under race conditions.
 		}
 	}
 }
