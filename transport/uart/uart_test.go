@@ -18,31 +18,36 @@
 // along with go-pn532; if not, write to the Free Software Foundation,
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-// Package frame provides frame manipulation and protocol constants for PN532 communication
-package frame
+package uart
 
-// Frame direction constants - these indicate the direction of data flow
-const (
-	HostToPn532 = 0xD4 // Commands from host to PN532
-	Pn532ToHost = 0xD5 // Responses from PN532 to host
+import (
+	"testing"
+
+	"github.com/ZaparooProject/go-pn532"
 )
 
-// Frame markers and control bytes
-const (
-	Preamble   = 0x00 // Frame preamble byte
-	StartCode1 = 0x00 // Start code byte 1
-	StartCode2 = 0xFF // Start code byte 2
-	Postamble  = 0x00 // Frame postamble byte
-)
+// TestTransportCreation verifies basic transport creation and properties
+func TestTransportCreation(t *testing.T) {
+	t.Parallel()
 
-// Frame size limits
-const (
-	MaxFrameDataLength = 263 // Maximum data length in frame (PN532 spec)
-	MinFrameLength     = 6   // Minimum frame length (preamble + startcode + len + lcs + tfi + dcs)
-)
+	testPortName := "/dev/ttyUSB0"
+	transport := &Transport{
+		portName: testPortName,
+	}
 
-// ACK and NACK frames - these are used for flow control
-var (
-	AckFrame  = []byte{0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00}
-	NackFrame = []byte{0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00}
-)
+	// Verify port name is stored correctly
+	if transport.portName != testPortName {
+		t.Errorf("Expected port name %s, got %s", testPortName, transport.portName)
+	}
+
+	// Verify transport type
+	expectedType := pn532.TransportUART
+	if transport.Type() != expectedType {
+		t.Errorf("Expected transport type %v, got %v", expectedType, transport.Type())
+	}
+
+	// Verify IsConnected returns false for uninitialized transport
+	if transport.IsConnected() {
+		t.Error("Expected IsConnected() to return false for uninitialized transport")
+	}
+}

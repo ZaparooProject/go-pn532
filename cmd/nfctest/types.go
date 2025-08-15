@@ -27,7 +27,7 @@ import (
 	"github.com/ZaparooProject/go-pn532"
 )
 
-// Operating modes
+// Mode represents the operating modes for NFC testing
 type Mode int
 
 const (
