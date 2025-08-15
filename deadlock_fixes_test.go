@@ -43,6 +43,8 @@ func TestUARTMutexDeadlockFix(t *testing.T) {
 
 	// Unit test equivalent using BlockingMockTransport to verify mutex release behavior
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(20 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)
@@ -88,6 +90,8 @@ func TestWaitAckBackoffFix(t *testing.T) {
 
 	// Unit test to verify timeout logic prevents infinite spinning
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(10 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)
@@ -129,6 +133,8 @@ func TestMIFAREAuthenticationLockingConsistency(t *testing.T) {
 
 	// Unit test to verify consistent locking behavior across authentication operations
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(30 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)

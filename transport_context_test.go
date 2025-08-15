@@ -161,8 +161,10 @@ func validateCancellationError(t *testing.T, err error, elapsed, ctxTimeout time
 	}
 
 	// Should return quickly due to cancellation
-	if elapsed > ctxTimeout+20*time.Millisecond {
-		t.Errorf("cancellation took too long: %v (expected ~%v)", elapsed, ctxTimeout)
+	// Allow extra time for cleanup mechanism (20ms cleanup timeout + some overhead)
+	maxExpected := ctxTimeout + 40*time.Millisecond
+	if elapsed > maxExpected {
+		t.Errorf("cancellation took too long: %v (expected ~%v, max %v)", elapsed, ctxTimeout, maxExpected)
 	}
 }
 
@@ -197,7 +199,7 @@ func TestSendCommandContext_PollingScenario(t *testing.T) {
 		if err == nil {
 			t.Errorf("iteration %d: expected timeout error, got nil", i)
 		}
-		if elapsed > 70*time.Millisecond {
+		if elapsed > 100*time.Millisecond {
 			t.Errorf("iteration %d: cancellation took too long: %v", i, elapsed)
 		}
 	}
@@ -237,9 +239,9 @@ func TestSendCommandContext_NoDeadlineGoroutineCleanup(t *testing.T) {
 		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 
-	// Should return in ~50ms (when cancelled) + small margin for processing
-	if elapsed > 80*time.Millisecond {
-		t.Errorf("cancellation took too long: %v (expected ~50ms)", elapsed)
+	// Should return in ~50ms (when cancelled) + margin for cleanup processing
+	if elapsed > 120*time.Millisecond {
+		t.Errorf("cancellation took too long: %v (expected ~50ms + cleanup)", elapsed)
 	}
 }
 

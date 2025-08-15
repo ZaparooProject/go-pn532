@@ -32,7 +32,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	defer goleak.VerifyTestMain(m)
+	m.Run()
 }
 
 // TestMutexReleaseOnTransportFailure verifies that transport mutexes are properly
@@ -41,6 +42,8 @@ func TestMutexReleaseOnTransportFailure(t *testing.T) {
 	t.Parallel()
 
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(20 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)
@@ -87,6 +90,8 @@ func TestContextCancellationDuringBlockedOperation(t *testing.T) {
 	t.Parallel()
 
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(20 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)
@@ -126,6 +131,8 @@ func TestConcurrentTransportAccess(t *testing.T) {
 	t.Parallel()
 
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(50 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)
@@ -176,11 +183,14 @@ func TestConcurrentTransportAccess(t *testing.T) {
 
 // setupEchoMockTransport creates a mock transport that echoes commands for testing
 func setupEchoMockTransport() *BlockingMockTransport {
-	return NewBlockingMockTransportWithFunc(func(cmd byte, data []byte) ([]byte, error) {
+	transport := NewBlockingMockTransportWithFunc(func(cmd byte, data []byte) ([]byte, error) {
 		// Echo back the command and data for verification
 		result := append([]byte{cmd}, data...)
 		return result, nil
 	})
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = transport.SetTimeout(20 * time.Millisecond)
+	return transport
 }
 
 // testImmediateCancellation tests that already-cancelled contexts are handled properly
@@ -307,6 +317,8 @@ func TestRandomContextCancellation(t *testing.T) {
 	t.Parallel()
 
 	mockTransport := NewBlockingMockTransport()
+	// Set a short timeout to prevent long goroutine cleanup waits
+	_ = mockTransport.SetTimeout(30 * time.Millisecond)
 	defer func() { _ = mockTransport.Close() }()
 
 	transportCtx := AsTransportContext(mockTransport)

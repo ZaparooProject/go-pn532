@@ -111,8 +111,11 @@ func (*transportContextAdapter) cleanupAbandonedOperation(abandoned *bool, resul
 		select {
 		case <-resultChan:
 			// Operation completed, consume result to prevent goroutine leak
-		case <-time.After(10 * time.Millisecond):
-			// Timeout waiting for goroutine, it's truly hung
+		case <-time.After(20 * time.Millisecond):
+			// Timeout waiting for goroutine cleanup
+			// At this point, the goroutine might still be running, but we've waited
+			// a reasonable amount of time. In test scenarios with mock transports,
+			// this should be sufficient for proper cleanup.
 		}
 	}
 }
