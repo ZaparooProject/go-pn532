@@ -29,15 +29,15 @@ type PollStrategy string
 
 const (
 	// PollStrategyAuto automatically selects the best polling strategy
-	// based on transport capabilities and previous detection results
+	// Currently defaults to InListPassiveTarget for better compatibility
 	PollStrategyAuto PollStrategy = "auto"
 
 	// PollStrategyAutoPoll uses the PN532's InAutoPoll command for continuous polling
-	// This is the preferred strategy for transports that support native InAutoPoll
+	// Available for explicit selection but not used as default
 	PollStrategyAutoPoll PollStrategy = "autopoll"
 
 	// PollStrategyLegacy uses the traditional InListPassiveTarget approach
-	// This is used as a fallback when InAutoPoll is not available or fails
+	// This is the preferred default strategy for reliable tag detection
 	PollStrategyLegacy PollStrategy = "legacy"
 
 	// PollStrategyManual disables automatic polling and requires explicit calls
@@ -60,7 +60,7 @@ type ContinuousPollConfig struct {
 // DefaultContinuousPollConfig returns a default continuous polling configuration
 func DefaultContinuousPollConfig() *ContinuousPollConfig {
 	return &ContinuousPollConfig{
-		Strategy:   PollStrategyAuto,
+		Strategy:   PollStrategyLegacy, // Use InListPassiveTarget as default
 		PollCount:  0xFF, // Endless polling
 		PollPeriod: 2,    // 300ms (2 * 150ms)
 		TargetTypes: []AutoPollTarget{
@@ -142,11 +142,9 @@ func (s *pollStrategyState) updateSupport(support pollSupport) {
 
 	// If auto strategy is selected, choose the best available strategy
 	if s.currentStrategy == PollStrategyAuto {
-		if support.hasAutoPollNative && !s.config.CompatibilityMode {
-			s.currentStrategy = PollStrategyAutoPoll
-		} else {
-			s.currentStrategy = PollStrategyLegacy
-		}
+		// Default to InListPassive strategy for better compatibility
+		// InAutoPoll remains available for explicit selection
+		s.currentStrategy = PollStrategyLegacy
 	}
 }
 

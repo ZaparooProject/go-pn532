@@ -350,7 +350,7 @@ func (d *Device) DetectTagContext(ctx context.Context) (*DetectedTag, error) {
 }
 
 // DetectTagsContext detects multiple tags in the field with context support
-// Uses polling strategy system to choose between InAutoPoll and InListPassiveTarget
+// Uses polling strategy system with InListPassiveTarget as the preferred default
 func (d *Device) DetectTagsContext(ctx context.Context, maxTags, baudRate byte) ([]*DetectedTag, error) {
 	if maxTags > 2 {
 		maxTags = 2 // PN532 can handle maximum 2 targets
