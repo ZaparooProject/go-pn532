@@ -151,13 +151,13 @@ func (d *Discovery) provideDetailedDiscoveryError(err error) error {
 
 	// Check for device access conflicts (device busy/in use by another process)
 	if isDeviceBusyError(err) {
-		return fmt.Errorf("reader discovery failed: device may be in use by another process. " +
-			"Try killing any existing nfctest processes with: pkill -f nfctest. " +
+		return fmt.Errorf("reader discovery failed: device may be in use by another process. "+
+			"Try killing any existing nfctest processes with: pkill -f nfctest. "+
 			"Original error: %w", err)
 	}
 
 	// Default detailed message
-	return fmt.Errorf("reader discovery failed: %w. " +
+	return fmt.Errorf("reader discovery failed: %w. "+
 		"Common causes: device disconnected, insufficient permissions, or communication failure", err)
 }
 

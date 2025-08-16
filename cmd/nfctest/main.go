@@ -84,7 +84,6 @@ func run() int {
 
 	// Run comprehensive mode
 	err := modes.RunComprehensive(ctx)
-
 	if err != nil {
 		output.Error("%v", err)
 		return 1

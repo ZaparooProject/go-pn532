@@ -18,52 +18,20 @@
 // along with go-pn532; if not, write to the Free Software Foundation,
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-package main
+package polling
 
-import (
-	"time"
+import "time"
 
-	"github.com/ZaparooProject/go-pn532/polling"
-)
-
-// Operating modes
-type Mode int
-
-const (
-	ModeComprehensive Mode = iota
-)
-
-// Transport type constants for type-safe transport detection
-const (
-	TransportUART = "uart"
-	TransportI2C  = "i2c"
-	TransportSPI  = "spi"
-)
-
-// Config holds application configuration
+// Config holds polling configuration options
 type Config struct {
-	Mode               Mode
-	ConnectTimeout     time.Duration
-	DetectTimeout      time.Duration
 	PollInterval       time.Duration
 	CardRemovalTimeout time.Duration
-	Verbose            bool
 }
 
-// DefaultConfig returns the default configuration
+// DefaultConfig returns the default polling configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Mode:               ModeComprehensive,
-		ConnectTimeout:     10 * time.Second,
-		DetectTimeout:      30 * time.Second,
 		PollInterval:       50 * time.Millisecond,
 		CardRemovalTimeout: 300 * time.Millisecond,
-		Verbose:            false,
 	}
-}
-
-// MonitoringSetup holds monitoring configuration
-type MonitoringSetup struct {
-	Monitors    []*polling.Monitor
-	ReaderPaths []string
 }

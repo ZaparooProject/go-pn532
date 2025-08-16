@@ -31,7 +31,6 @@ import (
 
 	pn532 "github.com/ZaparooProject/go-pn532"
 	"github.com/ZaparooProject/go-pn532/detection"
-
 	// Import all detectors to register them
 	_ "github.com/ZaparooProject/go-pn532/detection/i2c"
 	_ "github.com/ZaparooProject/go-pn532/detection/spi"

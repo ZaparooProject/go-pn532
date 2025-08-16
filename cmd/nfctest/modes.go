@@ -72,5 +72,3 @@ func (m *Modes) RunComprehensive(ctx context.Context) error {
 	// Start continuous card monitoring
 	return m.monitoring.MonitorCards(ctx, readers)
 }
-
-

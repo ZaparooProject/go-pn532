@@ -28,6 +28,7 @@ import (
 
 	"github.com/ZaparooProject/go-pn532"
 	"github.com/ZaparooProject/go-pn532/detection"
+	"github.com/ZaparooProject/go-pn532/polling"
 )
 
 // Monitoring handles card monitoring and polling
@@ -59,8 +60,8 @@ func (m *Monitoring) MonitorCards(ctx context.Context, readers []detection.Devic
 
 	// Clean up all devices on exit
 	defer func() {
-		for _, device := range setup.Devices {
-			_ = device.Close()
+		for _, monitor := range setup.Monitors {
+			_ = monitor.Close()
 		}
 	}()
 
@@ -69,9 +70,8 @@ func (m *Monitoring) MonitorCards(ctx context.Context, readers []detection.Devic
 
 func (m *Monitoring) initializeDevices(readers []detection.DeviceInfo) (*MonitoringSetup, error) {
 	setup := &MonitoringSetup{
-		Devices:     make([]*pn532.Device, 0, len(readers)),
+		Monitors:    make([]*polling.Monitor, 0, len(readers)),
 		ReaderPaths: make([]string, 0, len(readers)),
-		CardStates:  make([]CardState, 0, len(readers)),
 	}
 
 	for _, reader := range readers {
@@ -81,12 +81,45 @@ func (m *Monitoring) initializeDevices(readers []detection.DeviceInfo) (*Monitor
 			continue
 		}
 
-		setup.Devices = append(setup.Devices, device)
+		// Create polling config from main config
+		pollingConfig := &polling.Config{
+			PollInterval:       m.config.PollInterval,
+			CardRemovalTimeout: m.config.CardRemovalTimeout,
+		}
+
+		monitor := polling.NewMonitor(device, pollingConfig)
+
+		// Set up event callbacks (capture variables to avoid closure issues)
+		readerPath := reader.Path
+		monitor.OnCardDetected = func(tag *pn532.DetectedTag) error {
+			m.output.NewCardDetected(readerPath, string(tag.Type), tag.UID)
+			// Test the card
+			if err := m.testing.TestCard(device, tag); err != nil {
+				m.output.Error("Card test failed: %v", err)
+			} else {
+				m.output.OK("Card test completed")
+			}
+			return nil
+		}
+		monitor.OnCardRemoved = func() {
+			m.output.Info("Card removed from %s", readerPath)
+		}
+		monitor.OnCardChanged = func(tag *pn532.DetectedTag) error {
+			m.output.DifferentCardDetected(readerPath, string(tag.Type), tag.UID)
+			// Test the card again since it changed
+			if err := m.testing.TestCard(device, tag); err != nil {
+				m.output.Error("Card test failed: %v", err)
+			} else {
+				m.output.OK("Card test completed")
+			}
+			return nil
+		}
+
+		setup.Monitors = append(setup.Monitors, monitor)
 		setup.ReaderPaths = append(setup.ReaderPaths, reader.Path)
-		setup.CardStates = append(setup.CardStates, CardState{})
 	}
 
-	if len(setup.Devices) == 0 {
+	if len(setup.Monitors) == 0 {
 		return nil, errors.New("no functional readers available for monitoring")
 	}
 
@@ -116,14 +149,14 @@ func (m *Monitoring) createDevice(reader detection.DeviceInfo) (*pn532.Device, e
 	return device, nil
 }
 
-func (m *Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringSetup) error {
+func (*Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringSetup) error {
 	// Start continuous polling for each reader in separate goroutines
-	errChan := make(chan error, len(setup.Devices))
-	for i, device := range setup.Devices {
-		go func(_ int, dev *pn532.Device, readerPath string, state *CardState) {
-			err := m.continuousPolling(ctx, dev, readerPath, state)
+	errChan := make(chan error, len(setup.Monitors))
+	for i, monitor := range setup.Monitors {
+		go func(_ int, mon *polling.Monitor) {
+			err := mon.Start(ctx)
 			errChan <- err
-		}(i, device, setup.ReaderPaths[i], &setup.CardStates[i])
+		}(i, monitor)
 	}
 
 	// Wait for context cancellation or first error
@@ -137,169 +170,3 @@ func (m *Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringS
 		return nil
 	}
 }
-
-// continuousPolling runs continuous InAutoPoll monitoring for a single reader
-func (m *Monitoring) continuousPolling(
-	ctx context.Context, device *pn532.Device, readerPath string, state *CardState,
-) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		detectedTag, err := m.performSinglePoll(ctx, device)
-		if err != nil {
-			if errors.Is(err, ErrNoTagInPoll) {
-				// No tag detected - timer will handle removal detection
-				// No need to call processPollingResults with nil
-			} else {
-				m.handlePollingError(err, state, readerPath)
-			}
-			continue
-		}
-
-		m.processPollingResults(device, detectedTag, state, readerPath)
-
-		// Add a small delay between polling attempts to prevent excessive CPU usage
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-			// Continue to next poll
-		}
-	}
-}
-
-// performSinglePoll performs a single tag detection cycle using direct InListPassiveTarget
-func (m *Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device) (*pn532.DetectedTag, error) {
-	// Create a timeout context for this single poll attempt
-	pollCtx, cancel := context.WithTimeout(ctx, m.config.PollInterval)
-	defer cancel()
-
-	// Use InListPassiveTargetContext directly to get immediate results
-	tags, err := device.InListPassiveTargetContext(pollCtx, 1, 0x00)
-	if err != nil {
-		// Check if it's a timeout (no tag detected) vs actual error
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, ErrNoTagInPoll // No tag detected within timeout
-		}
-		return nil, fmt.Errorf("tag detection failed: %w", err)
-	}
-
-	// Check if any tags were found
-	if len(tags) == 0 {
-		return nil, ErrNoTagInPoll // No tag detected, but not an error
-	}
-
-	return tags[0], nil
-}
-
-// handlePollingError handles errors from polling operations
-func (m *Monitoring) handlePollingError(err error, state *CardState, readerPath string) {
-	if errors.Is(err, context.DeadlineExceeded) {
-		// Timeout is normal - timer will handle removal detection
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-
-	// For serious device errors, trigger immediate card removal
-	// This handles cases like device disconnection
-	m.output.Warning("Polling error on %s: %v", readerPath, err)
-	m.handleCardRemoval(state, readerPath)
-}
-
-// handleCardRemoval handles card removal state changes
-func (m *Monitoring) handleCardRemoval(state *CardState, readerPath string) {
-	if state.Present {
-		m.output.Info("Card removed from %s", readerPath)
-		m.resetCardState(state)
-	}
-}
-
-// resetCardState resets the card state to empty
-func (*Monitoring) resetCardState(state *CardState) {
-	state.TransitionToIdle()
-}
-
-// processPollingResults processes the detected tag
-func (m *Monitoring) processPollingResults(
-	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string,
-) {
-	if detectedTag == nil {
-		// No tag detected - only handle removal if we're in a state that allows it
-		if state.CanStartRemovalTimer() && state.DetectionState != StateReading {
-			// Timer should handle removal, but this is a safety check
-		}
-		return
-	}
-
-	// Card present - handle state transitions
-	cardChanged := m.updateCardState(state, detectedTag, readerPath)
-	
-	// Transition to detected state with removal timer (unless we're currently reading)
-	if state.DetectionState != StateReading {
-		state.TransitionToDetected(m.config.CardRemovalTimeout, func() {
-			m.handleCardRemoval(state, readerPath)
-		})
-	}
-
-	if cardChanged || m.shouldTestCard(state, detectedTag.UID) {
-		m.testAndRecordCard(device, detectedTag, state, readerPath)
-	}
-}
-
-// updateCardState updates the card state and returns whether the card changed
-func (m *Monitoring) updateCardState(state *CardState, detectedTag *pn532.DetectedTag, readerPath string) bool {
-	currentUID := detectedTag.UID
-	cardType := string(detectedTag.Type)
-
-	if !state.Present {
-		m.output.NewCardDetected(readerPath, cardType, currentUID)
-		state.Present = true
-		state.LastUID = currentUID
-		state.LastType = cardType
-		state.TestedUID = ""
-		return true
-	}
-
-	if state.LastUID != currentUID {
-		m.output.DifferentCardDetected(readerPath, cardType, currentUID)
-		state.LastUID = currentUID
-		state.LastType = cardType
-		state.TestedUID = ""
-		return true
-	}
-
-	return false
-}
-
-// shouldTestCard determines if we should test the card
-func (*Monitoring) shouldTestCard(state *CardState, currentUID string) bool {
-	return state.TestedUID != currentUID
-}
-
-// testAndRecordCard tests the card and records the result
-func (m *Monitoring) testAndRecordCard(
-	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string,
-) {
-	// Transition to reading state to prevent removal timer from firing during long reads
-	state.TransitionToReading()
-	
-	if err := m.testing.TestCard(device, detectedTag); err != nil {
-		m.output.Error("Card test failed: %v", err)
-	} else {
-		m.output.OK("Card test completed")
-	}
-	state.TestedUID = detectedTag.UID
-	
-	// Transition to post-read grace period with shorter timeout
-	state.TransitionToPostReadGrace(m.config.CardRemovalTimeout, func() {
-		m.handleCardRemoval(state, readerPath)
-	})
-}
-
