@@ -161,21 +161,39 @@ func (m *Monitoring) continuousPolling(
 		}
 
 		m.processPollingResults(device, detectedTag, state, readerPath, isQuick)
-		// No additional sleep needed - SimplePoll handles timing internally
+
+		// Add a small delay between polling attempts to prevent excessive CPU usage
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+			// Continue to next poll
+		}
 	}
 }
 
-// performSinglePoll performs a single tag detection cycle using the sophisticated strategy system
+// performSinglePoll performs a single tag detection cycle using direct InListPassiveTarget
 func (m *Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device) (*pn532.DetectedTag, error) {
-	// Use simplified polling with configurable interval from config
-	detectedTag, err := device.SimplePoll(ctx, m.config.PollInterval)
+	// Create a timeout context for this single poll attempt
+	pollCtx, cancel := context.WithTimeout(ctx, m.config.PollInterval)
+	defer cancel()
+
+	// Use InListPassiveTargetContext directly to get immediate results
+	tags, err := device.InListPassiveTargetContext(pollCtx, 1, 0x00)
 	if err != nil {
-		if errors.Is(err, pn532.ErrNoTagDetected) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, ErrNoTagInPoll // No tag detected, but not an error
+		// Check if it's a timeout (no tag detected) vs actual error
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, ErrNoTagInPoll // No tag detected within timeout
 		}
 		return nil, fmt.Errorf("tag detection failed: %w", err)
 	}
-	return detectedTag, nil
+
+	// Check if any tags were found
+	if len(tags) == 0 {
+		return nil, ErrNoTagInPoll // No tag detected, but not an error
+	}
+
+	return tags[0], nil
 }
 
 // handlePollingError handles errors from InAutoPoll operations

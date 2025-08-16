@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/ZaparooProject/go-pn532"
@@ -55,7 +56,7 @@ func (d *Discovery) DiscoverReaders(ctx context.Context) ([]detection.DeviceInfo
 
 	readers, err := detection.DetectAllContext(ctx, &opts)
 	if err != nil {
-		return nil, fmt.Errorf("reader discovery failed: %w", err)
+		return nil, d.provideDetailedDiscoveryError(err)
 	}
 
 	d.output.Verbose("   Found %d reader(s)", len(readers))
@@ -132,4 +133,38 @@ func (*Discovery) FindDisconnectedReaders(lastReaders, currentReaders []detectio
 // HandleDiscoveryError handles reader discovery errors in vendor test mode
 func (d *Discovery) HandleDiscoveryError(err error) {
 	d.output.Verbose("Discovery error: %v", err)
+}
+
+// provideDetailedDiscoveryError provides more helpful error messages for common discovery failures
+func (d *Discovery) provideDetailedDiscoveryError(err error) error {
+	if errors.Is(err, detection.ErrUnsupportedPlatform) {
+		return fmt.Errorf("reader discovery failed: I2C/SPI detection not supported on this platform, but UART should work. " +
+			"If you have a USB PN532 device, ensure it's connected and not in use by another process. " +
+			"You can check with: lsof | grep '/dev/cu.usbserial' or 'lsof | grep '/dev/ttyUSB'")
+	}
+
+	if errors.Is(err, detection.ErrNoDevicesFound) {
+		return fmt.Errorf("reader discovery failed: no PN532 devices found. " +
+			"Ensure your PN532 device is connected via USB and the driver is loaded. " +
+			"On macOS, USB devices appear as /dev/cu.usbserial-*")
+	}
+
+	// Check for device access conflicts (device busy/in use by another process)
+	if isDeviceBusyError(err) {
+		return fmt.Errorf("reader discovery failed: device may be in use by another process. " +
+			"Try killing any existing nfctest processes with: pkill -f nfctest. " +
+			"Original error: %w", err)
+	}
+
+	// Default detailed message
+	return fmt.Errorf("reader discovery failed: %w. " +
+		"Common causes: device disconnected, insufficient permissions, or communication failure", err)
+}
+
+// isDeviceBusyError checks if the error indicates the device is busy/in use by another process
+func isDeviceBusyError(err error) bool {
+	// Only check for errors that specifically indicate device access conflicts,
+	// not general communication failures
+	return errors.Is(err, pn532.ErrTransportClosed) ||
+		errors.Is(err, pn532.ErrDeviceNotFound)
 }
