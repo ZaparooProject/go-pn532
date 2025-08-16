@@ -22,6 +22,7 @@ package pn532
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -86,6 +87,14 @@ func (*Device) pauseWithContext(ctx context.Context, interval time.Duration) err
 func (d *Device) attemptDetection(_ context.Context, errorCount *int) (*DetectedTag, error) {
 	detectedTag, err := d.DetectTag()
 	if err != nil {
+		// ErrNoTagDetected is expected during polling, not a real error
+		if errors.Is(err, ErrNoTagDetected) {
+			if *errorCount == 0 {
+				debugln("No tag detected, continuing to poll...")
+			}
+			return nil, ErrNoTagDetected
+		}
+		// Handle other errors through the error counting mechanism
 		return nil, d.handleDetectionError(errorCount, err)
 	}
 
@@ -94,7 +103,7 @@ func (d *Device) attemptDetection(_ context.Context, errorCount *int) (*Detected
 		return detectedTag, nil
 	}
 
-	// No tag detected but no error
+	// This shouldn't happen - DetectTag should return ErrNoTagDetected when no tag found
 	if *errorCount == 0 {
 		debugln("No tag detected, continuing to poll...")
 	}

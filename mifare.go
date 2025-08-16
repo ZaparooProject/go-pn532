@@ -88,14 +88,6 @@ const (
 	MIFAREKeyB = 0x01
 )
 
-// Retry strategy constants
-const (
-	retryBaseDelay   = 200 * time.Millisecond
-	retryMaxDelay    = 4 * time.Second
-	retryJitterMaxMs = 100
-	maxRetryAttempts = 5
-)
-
 // Retry levels (progressive recovery)
 type retryLevel int
 
@@ -162,9 +154,31 @@ func (sk *secureKey) bytes() []byte {
 	return result
 }
 
+// MIFAREConfig holds all configurable timing parameters for MIFARE operations
+type MIFAREConfig struct {
+	RetryConfig   *RetryConfig  // Retry backoff configuration
+	HardwareDelay time.Duration // Hardware timing delays (reinitialization, tag processing)
+}
+
+// DefaultMIFAREConfig returns production-safe MIFARE configuration
+func DefaultMIFAREConfig() *MIFAREConfig {
+	return &MIFAREConfig{
+		RetryConfig: &RetryConfig{
+			MaxAttempts:       5,
+			InitialBackoff:    200 * time.Millisecond,
+			MaxBackoff:        4 * time.Second,
+			BackoffMultiplier: 2.0,
+			Jitter:            0.1,
+			RetryTimeout:      30 * time.Second,
+		},
+		HardwareDelay: 50 * time.Millisecond,
+	}
+}
+
 // MIFARETag represents a MIFARE Classic tag
 type MIFARETag struct {
 	ndefKey *secureKey
+	config  *MIFAREConfig
 	BaseTag
 	timing          authTiming
 	lastAuthSector  int
@@ -183,9 +197,24 @@ func NewMIFARETag(device *Device, uid []byte, sak byte) *MIFARETag {
 			sak:     sak,
 		},
 		lastAuthSector: -1, // Not authenticated initially
+		config:         DefaultMIFAREConfig(),
 	}
 
 	return tag
+}
+
+// SetConfig allows runtime configuration of MIFARE behavior for testing
+func (t *MIFARETag) SetConfig(config *MIFAREConfig) {
+	if config != nil {
+		t.config = config
+	}
+}
+
+// SetRetryConfig allows runtime configuration of retry behavior for testing
+func (t *MIFARETag) SetRetryConfig(config *RetryConfig) {
+	if config != nil {
+		t.config.RetryConfig = config
+	}
 }
 
 // authenticateNDEF authenticates to a sector using NDEF standard key with robust retry
@@ -817,7 +846,7 @@ func (t *MIFARETag) AuthenticateRobust(sector uint8, keyType byte, key []byte) e
 func (t *MIFARETag) authenticateWithRetry(sector uint8, keyType byte, key []byte) error {
 	var lastErr error
 
-	for attempt := 0; attempt < maxRetryAttempts; attempt++ {
+	for attempt := 0; attempt < t.config.RetryConfig.MaxAttempts; attempt++ {
 		level := t.getRetryLevel(attempt)
 
 		// Apply recovery strategy based on level
@@ -843,7 +872,7 @@ func (t *MIFARETag) authenticateWithRetry(sector uint8, keyType byte, key []byte
 		time.Sleep(delay)
 	}
 
-	return fmt.Errorf("authentication failed after %d attempts: %w", maxRetryAttempts, lastErr)
+	return fmt.Errorf("authentication failed after %d attempts: %w", t.config.RetryConfig.MaxAttempts, lastErr)
 }
 
 // getRetryLevel determines the retry level based on attempt number
@@ -891,7 +920,7 @@ func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
 			if err == nil {
 				break
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(t.config.HardwareDelay)
 		}
 
 		t.authMutex.Lock()
@@ -911,23 +940,29 @@ func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
 }
 
 // calculateRetryDelay implements exponential backoff with jitter
-func (*MIFARETag) calculateRetryDelay(attempt int) time.Duration {
+func (t *MIFARETag) calculateRetryDelay(attempt int) time.Duration {
 	// Exponential backoff: baseDelay * 2^attempt
 	if attempt > 30 { // Prevent overflow
 		attempt = 30
 	}
 	//nolint:gosec // G115: Overflow prevented by bounds check above
 	shiftAmount := uint(attempt)
-	delay := retryBaseDelay * time.Duration(1<<shiftAmount)
-	if delay > retryMaxDelay {
-		delay = retryMaxDelay
+	delay := t.config.RetryConfig.InitialBackoff * time.Duration(1<<shiftAmount)
+	if delay > t.config.RetryConfig.MaxBackoff {
+		delay = t.config.RetryConfig.MaxBackoff
 	}
 
-	// Add random jitter (0-100ms)
-	jitterMax := big.NewInt(int64(retryJitterMaxMs))
-	jitterBig, _ := rand.Int(rand.Reader, jitterMax)
-	jitter := time.Duration(jitterBig.Int64()) * time.Millisecond
-	return delay + jitter
+	// Add random jitter based on configured factor
+	if t.config.RetryConfig.Jitter > 0 {
+		jitterAmount := float64(delay) * t.config.RetryConfig.Jitter
+		jitterMax := big.NewInt(int64(jitterAmount))
+		if jitterMax.Int64() > 0 {
+			jitterBig, _ := rand.Int(rand.Reader, jitterMax)
+			jitter := time.Duration(jitterBig.Int64())
+			return delay + jitter
+		}
+	}
+	return delay
 }
 
 // isPermanentFailure checks if an error indicates a permanent failure
@@ -1081,7 +1116,7 @@ func (t *MIFARETag) formatForNDEFWithKey(blankKey []byte) error {
 	clearKeyBytes(ndefKeyBytes)
 
 	// Add a small delay to let the tag process the key changes
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(t.config.HardwareDelay)
 
 	return nil
 }

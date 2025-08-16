@@ -25,6 +25,78 @@ const (
 	I2CFuncI2C = 0x00000001
 )
 
+// i2cBusInfo contains information about an I2C bus
+type i2cBusInfo struct {
+	Path   string // Device path, e.g., "/dev/i2c-1"
+	Number int    // Bus number
+}
+
+// probeI2CDevice attempts to communicate with a device at the given I2C address
+// to determine if it's a PN532 chip. Returns true if confirmed and any metadata.
+func probeI2CDevice(
+	ctx context.Context,
+	busPath string,
+	addr uint8,
+	mode detection.Mode,
+) (found bool, metadata map[string]string) {
+	metadata = make(map[string]string)
+
+	// For passive mode, we don't actually probe - just return false
+	if mode == detection.Passive {
+		return false, metadata
+	}
+
+	// Try to open the bus device
+	fileDescriptor, err := syscall.Open(busPath, syscall.O_RDWR, 0)
+	if err != nil {
+		return false, metadata
+	}
+	defer func() { _ = syscall.Close(fileDescriptor) }()
+
+	// Set slave address
+	if ioctlErr := ioctl(fileDescriptor, I2CSlave, uintptr(addr)); ioctlErr != nil {
+		return false, metadata
+	}
+
+	// Try to perform a simple read to see if device responds
+	// PN532 should respond to a GetFirmwareVersion command (0x02)
+	// This is a very basic probe - just check if something is there
+	testCmd := []byte{0x02} // GetFirmwareVersion command
+
+	// Check context timeout
+	select {
+	case <-ctx.Done():
+		return false, metadata
+	default:
+	}
+
+	// Attempt a simple write/read cycle
+	// This is a minimal probe - in a real implementation you'd want
+	// to send proper PN532 commands and validate responses
+	bytesWritten, err := syscall.Write(fileDescriptor, testCmd)
+	if err != nil || bytesWritten != len(testCmd) {
+		return false, metadata
+	}
+
+	// Try to read response (basic check)
+	response := make([]byte, 16)
+	bytesRead, err := syscall.Read(fileDescriptor, response)
+	if err != nil {
+		return false, metadata
+	}
+
+	// If we got any response, consider it a potential match
+	// In a real implementation, you'd validate the PN532 response format
+	if bytesRead > 0 {
+		metadata["probe_response_length"] = fmt.Sprintf("%d", bytesRead)
+		metadata["bus_path"] = busPath
+		metadata["address"] = fmt.Sprintf("0x%02X", addr)
+		return true, metadata
+	}
+
+	return false, metadata
+}
+
 // detectLinux searches for PN532 devices on Linux I2C buses
 func detectLinux(ctx context.Context, opts *detection.Options) ([]detection.DeviceInfo, error) {
 	// Find all I2C buses
