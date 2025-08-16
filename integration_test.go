@@ -18,6 +18,7 @@ package pn532
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -294,5 +295,159 @@ func BenchmarkTagDetection(b *testing.B) {
 		tags, err := device.DetectTagsContext(ctx, 1, 0)
 		require.NoError(b, err)
 		require.Len(b, tags, 1)
+	}
+}
+
+// TestMIFAREVirtualTagReadWrite tests the MIFARE virtual tag implementations
+func TestMIFAREVirtualTagReadWrite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		createTag   func() *testutil.VirtualTag
+		testBlocks  []int
+		expectError bool
+	}{
+		{
+			name:       "MIFARE1K_ReadWrite",
+			createTag:  func() *testutil.VirtualTag { return testutil.NewVirtualMIFARE1K(nil) },
+			testBlocks: []int{1, 2, 4, 5}, // Skip sector trailers (3, 7, etc.)
+		},
+		{
+			name:       "MIFARE4K_ReadWrite",
+			createTag:  func() *testutil.VirtualTag { return testutil.NewVirtualMIFARE4K(nil) },
+			testBlocks: []int{1, 2, 4, 5, 8, 9}, // Skip sector trailers
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture loop variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create virtual tag
+			virtualTag := tt.createTag()
+			require.NotNil(t, virtualTag)
+			require.True(t, virtualTag.Present)
+
+			// Test reading from multiple blocks
+			for _, blockNum := range tt.testBlocks {
+				t.Run(fmt.Sprintf("Block_%d", blockNum), func(t *testing.T) {
+					// Test reading
+					data, err := virtualTag.ReadBlock(blockNum)
+					require.NoError(t, err)
+					assert.Len(t, data, 16, "Block should be 16 bytes")
+
+					// Test writing (create test pattern)
+					testData := make([]byte, 16)
+					for i := range testData {
+						testData[i] = byte(blockNum + i) // Create unique pattern
+					}
+
+					err = virtualTag.WriteBlock(blockNum, testData)
+					require.NoError(t, err)
+
+					// Read back and verify
+					readData, err := virtualTag.ReadBlock(blockNum)
+					require.NoError(t, err)
+					assert.Equal(t, testData, readData, "Written data should match read data")
+				})
+			}
+
+			// Test error conditions
+			t.Run("ErrorConditions", func(t *testing.T) {
+				// Test reading out of range
+				_, err := virtualTag.ReadBlock(1000)
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "out of range")
+
+				// Test writing out of range
+				err = virtualTag.WriteBlock(1000, make([]byte, 16))
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "out of range")
+
+				// Test wrong data size
+				err = virtualTag.WriteBlock(tt.testBlocks[0], make([]byte, 10))
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "must be exactly 16 bytes")
+
+				// Test tag removal
+				virtualTag.Remove()
+				assert.False(t, virtualTag.Present)
+
+				_, err = virtualTag.ReadBlock(tt.testBlocks[0])
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "not present")
+
+				err = virtualTag.WriteBlock(tt.testBlocks[0], make([]byte, 16))
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "not present")
+
+				// Test tag re-insertion
+				virtualTag.Insert()
+				assert.True(t, virtualTag.Present)
+
+				_, err = virtualTag.ReadBlock(tt.testBlocks[0])
+				assert.NoError(t, err)
+			})
+		})
+	}
+}
+
+// TestMIFAREWriteProtection tests write protection on sector trailers
+func TestMIFAREWriteProtection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		createTag         func() *testutil.VirtualTag
+		protectedBlocks   []int
+		unprotectedBlocks []int
+	}{
+		{
+			name:              "MIFARE1K_WriteProtection",
+			createTag:         func() *testutil.VirtualTag { return testutil.NewVirtualMIFARE1K(nil) },
+			protectedBlocks:   []int{3, 7, 11, 15}, // Sector trailers
+			unprotectedBlocks: []int{1, 2, 4, 5},   // Regular blocks
+		},
+		{
+			name:              "MIFARE4K_WriteProtection",
+			createTag:         func() *testutil.VirtualTag { return testutil.NewVirtualMIFARE4K(nil) },
+			protectedBlocks:   []int{3, 7, 11, 15, 143, 159}, // Include 4K sector trailers
+			unprotectedBlocks: []int{1, 2, 4, 5, 8, 9},       // Regular blocks
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture loop variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			virtualTag := tt.createTag()
+			require.NotNil(t, virtualTag)
+
+			testData := make([]byte, 16)
+			for i := range testData {
+				testData[i] = 0xAA // Test pattern
+			}
+
+			// Test protected blocks should fail
+			for _, block := range tt.protectedBlocks {
+				err := virtualTag.WriteBlock(block, testData)
+				assert.Error(t, err, "Block %d should be write protected", block)
+				assert.Contains(t, err.Error(), "write protected")
+			}
+
+			// Test unprotected blocks should succeed
+			for _, block := range tt.unprotectedBlocks {
+				err := virtualTag.WriteBlock(block, testData)
+				assert.NoError(t, err, "Block %d should be writable", block)
+
+				// Verify data was written
+				readData, err := virtualTag.ReadBlock(block)
+				assert.NoError(t, err)
+				assert.Equal(t, testData, readData)
+			}
+		})
 	}
 }
