@@ -197,7 +197,9 @@ func getSetupAPICOMPorts(ctx context.Context) ([]serialPort, error) {
 
 			// Parse hardware ID for VID/PID
 			if hardwareIDStr != "" {
-				parseWindowsHardwareID(&port, hardwareIDStr)
+				if hwid := parseWindowsHardwareID(hardwareIDStr); hwid != "" {
+					port.VIDPID = hwid
+				}
 			}
 
 			ports = append(ports, port)
