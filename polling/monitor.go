@@ -31,14 +31,12 @@ import (
 
 // Monitor handles continuous card monitoring with state machine
 type Monitor struct {
-	device *pn532.Device
-	config *Config
-	state  CardState
-
-	// Event callbacks
+	device         *pn532.Device
+	config         *Config
 	OnCardDetected func(tag *pn532.DetectedTag) error
 	OnCardRemoved  func()
 	OnCardChanged  func(tag *pn532.DetectedTag) error
+	state          CardState
 }
 
 // NewMonitor creates a new card monitor

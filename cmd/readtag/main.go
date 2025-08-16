@@ -35,42 +35,17 @@ import (
 	_ "github.com/ZaparooProject/go-pn532/detection/i2c"
 	_ "github.com/ZaparooProject/go-pn532/detection/spi"
 	_ "github.com/ZaparooProject/go-pn532/detection/uart"
+	"github.com/ZaparooProject/go-pn532/polling"
 	"github.com/ZaparooProject/go-pn532/transport/i2c"
 	"github.com/ZaparooProject/go-pn532/transport/spi"
 	"github.com/ZaparooProject/go-pn532/transport/uart"
 )
-
-// mustPrint prints to stdout, panicking on error (for test output only)
-func mustPrint(args ...any) {
-	_, err := fmt.Print(args...)
-	if err != nil {
-		panic(err)
-	}
-}
-
-// mustPrintf prints formatted output to stdout, panicking on error (for test output only)
-func mustPrintf(format string, args ...any) {
-	_, err := fmt.Printf(format, args...)
-	if err != nil {
-		panic(err)
-	}
-}
-
-// mustPrintln prints with newline to stdout, panicking on error (for test output only)
-func mustPrintln(args ...any) {
-	_, err := fmt.Println(args...)
-	if err != nil {
-		panic(err)
-	}
-}
 
 type config struct {
 	devicePath   *string
 	timeout      *time.Duration
 	writeText    *string
 	debug        *bool
-	testRobust   *bool
-	testTiming   *bool
 	pollInterval *time.Duration
 }
 
@@ -78,11 +53,9 @@ func parseFlags() *config {
 	cfg := &config{
 		devicePath: flag.String("device", "",
 			"Serial device path (e.g., /dev/ttyUSB0 or COM3). Leave empty for auto-detection."),
-		timeout:    flag.Duration("timeout", 30*time.Second, "Timeout for tag detection (default: 30s)"),
-		writeText:  flag.String("write", "", "Text to write to the tag (if not specified, will only read)"),
-		debug:      flag.Bool("debug", false, "Enable debug output"),
-		testRobust: flag.Bool("test-robust", false, "Test robust authentication features for Chinese clone cards"),
-		testTiming: flag.Bool("test-timing", false, "Test timing variance analysis"),
+		timeout:   flag.Duration("timeout", 30*time.Second, "Timeout for tag detection (default: 30s)"),
+		writeText: flag.String("write", "", "Text to write to the tag (if not specified, will only read)"),
+		debug:     flag.Bool("debug", false, "Enable debug output"),
 		pollInterval: flag.Duration("poll-interval", 100*time.Millisecond,
 			"Polling interval for tag detection (default: 100ms)"),
 	}
@@ -188,32 +161,12 @@ func connectToDevice(cfg *config, connectOpts []pn532.ConnectOption) (*pn532.Dev
 	return device, nil
 }
 
-func waitForAndCreateTag(device *pn532.Device, timeout, pollInterval time.Duration) (pn532.Tag, error) {
-	_, _ = fmt.Printf("Waiting for NFC tag (timeout: %s, poll interval: %s)...\n", timeout, pollInterval)
+func setupPollingMonitor(device *pn532.Device, cfg *config) (*polling.Monitor, *polling.Config) {
+	pollingConfig := polling.DefaultConfig()
+	pollingConfig.PollInterval = *cfg.pollInterval
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Use simplified polling with configurable intervals
-	detectedTag, err := device.SimplePoll(ctx, pollInterval)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("timeout: no tag detected within %s", timeout)
-		}
-		return nil, fmt.Errorf("tag detection failed: %w", err)
-	}
-
-	// Handle case where no tag was detected (SimplePoll returns nil, nil)
-	if detectedTag == nil {
-		return nil, errors.New("no tag detected")
-	}
-
-	tag, err := device.CreateTag(detectedTag)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tag: %w", err)
-	}
-
-	return tag, nil
+	monitor := polling.NewMonitor(device, pollingConfig)
+	return monitor, pollingConfig
 }
 
 func writeTextIfRequested(tag pn532.Tag, writeText string) error {
@@ -229,271 +182,6 @@ func writeTextIfRequested(tag pn532.Tag, writeText string) error {
 	return nil
 }
 
-func testChineseCloneUnlock(mifareTag *pn532.MIFARETag) {
-	mustPrint("\n=== Testing Chinese Clone Unlock Sequences ===\n")
-
-	// Test Gen1 unlock commands directly
-	unlockCommands := []struct {
-		name string
-		desc string
-		cmd  byte
-	}{
-		{"Gen1 7-bit", "Chinese Gen1 clone unlock (7-bit UID)", 0x40},
-		{"Gen1 8-bit", "Chinese Gen1 clone unlock (4-byte UID)", 0x43},
-	}
-
-	foundUnlock := false
-
-	for _, unlock := range unlockCommands {
-		mustPrintf("Trying %s (0x%02X): ", unlock.name, unlock.cmd)
-
-		// Access the device directly to test unlock commands
-		device := mifareTag.GetDevice() // We'll need to add this method
-		if device == nil {
-			mustPrintln("FAILED - cannot access device")
-			continue
-		}
-
-		// Try the unlock command
-		start := time.Now()
-		_, err := device.SendDataExchange([]byte{unlock.cmd})
-		duration := time.Since(start)
-
-		if err == nil {
-			mustPrintf("SUCCESS (%.2fms) - %s\n", float64(duration.Nanoseconds())/1000000, unlock.desc)
-			foundUnlock = true
-
-			// If unlock successful, try to read manufacturer block directly
-			mustPrintln("  Attempting direct block 0 read (no authentication needed)...")
-			if data, readErr := mifareTag.ReadBlockDirect(0); readErr == nil {
-				mustPrintf("  Block 0 (UID): %02X %02X %02X %02X %02X %02X %02X %02X...\n",
-					data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
-				mustPrintln("  → This is a Gen1 Chinese clone with backdoor access!")
-			} else {
-				mustPrintf("  Block 0 read failed: %v\n", readErr)
-			}
-		} else {
-			mustPrintf("FAILED (%.2fms) - %v\n", float64(duration.Nanoseconds())/1000000, err)
-		}
-	}
-
-	if !foundUnlock {
-		mustPrintln("\nNo Chinese clone unlock sequences successful.")
-		mustPrintln("This may be a Gen2/CUID/FUID clone or genuine card.")
-
-		// Test FM11RF08S universal backdoor key
-		mustPrint("\nTesting FM11RF08S universal backdoor key: ")
-		backdoorKey := []byte{0xA3, 0x96, 0xEF, 0xA4, 0xE2, 0x4F}
-
-		start := time.Now()
-		err := mifareTag.AuthenticateRobust(1, pn532.MIFAREKeyA, backdoorKey)
-		duration := time.Since(start)
-
-		if err == nil {
-			mustPrintf("SUCCESS (%.2fms)\n", float64(duration.Nanoseconds())/1000000)
-			mustPrintln("→ This is likely an FM11RF08S clone with universal backdoor!")
-		} else {
-			mustPrintf("FAILED (%.2fms) - %v\n", float64(duration.Nanoseconds())/1000000, err)
-			mustPrintln("→ Backdoor key authentication failed")
-		}
-	}
-}
-
-// tryKeyOnSector attempts to authenticate with a given key and sector
-func tryKeyOnSector(
-	mifareTag *pn532.MIFARETag,
-	sector uint8,
-	key []byte,
-	keyType byte,
-	keyName string,
-) (success bool, duration time.Duration) {
-	mustPrintf("  Trying Key %s [%02X %02X %02X %02X %02X %02X]: ",
-		keyName, key[0], key[1], key[2], key[3], key[4], key[5])
-
-	start := time.Now()
-	err := mifareTag.AuthenticateRobust(sector, keyType, key)
-	duration = time.Since(start)
-
-	if err == nil {
-		mustPrintf("SUCCESS (%.2fms)\n", float64(duration.Nanoseconds())/1000000)
-		testSectorRead(mifareTag, sector)
-		return true, duration
-	}
-
-	mustPrintf("FAILED (%.2fms) - %v\n", float64(duration.Nanoseconds())/1000000, err)
-	analysis := mifareTag.AnalyzeLastError(err)
-	mustPrintf("    Error analysis: %s\n", analysis)
-	return false, duration
-}
-
-// testSectorRead attempts to read a block from the authenticated sector
-func testSectorRead(mifareTag *pn532.MIFARETag, sector uint8) {
-	block := sector * 4 // First block of sector
-	if data, readErr := mifareTag.ReadBlock(block); readErr == nil {
-		mustPrintf("    Block %d read: %02X %02X %02X ... (16 bytes)\n",
-			block, data[0], data[1], data[2])
-	} else {
-		mustPrintf("    Block %d read failed: %v\n", block, readErr)
-		analysis := mifareTag.AnalyzeLastError(readErr)
-		mustPrintf("    Error analysis: %s\n", analysis)
-	}
-}
-
-// testSectorAuthentication tests all keys for a given sector
-func testSectorAuthentication(
-	mifareTag *pn532.MIFARETag,
-	sector uint8,
-	testKeys [][]byte,
-) (success bool, authCount int) {
-	mustPrintf("\nTesting sector %d:\n", sector)
-
-	for _, key := range testKeys {
-		for _, keyType := range []byte{pn532.MIFAREKeyA, pn532.MIFAREKeyB} {
-			keyName := "A"
-			if keyType == pn532.MIFAREKeyB {
-				keyName = "B"
-			}
-
-			if keySuccess, _ := tryKeyOnSector(mifareTag, sector, key, keyType, keyName); keySuccess {
-				return true, 1
-			}
-			authCount++
-		}
-	}
-
-	mustPrintf("  No working keys found for sector %d\n", sector)
-	return false, authCount
-}
-
-func testRobustAuthentication(tag pn532.Tag) {
-	mifareTag, ok := tag.(*pn532.MIFARETag)
-	if !ok {
-		mustPrintln("Tag is not a MIFARE tag, skipping robust authentication test")
-		return
-	}
-
-	mustPrint("\n=== Testing Robust Authentication ===\n")
-
-	testChineseCloneUnlock(mifareTag)
-
-	testKeys := [][]byte{
-		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, // Default transport key
-		{0xD3, 0xF7, 0xD3, 0xF7, 0xD3, 0xF7}, // NDEF key
-		{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // All zeros
-		{0xA3, 0x96, 0xEF, 0xA4, 0xE2, 0x4F}, // FM11RF08S universal backdoor key
-	}
-
-	successfulAuths := 0
-	totalAttempts := 0
-
-	for sector := uint8(1); sector < 4; sector++ {
-		success, attempts := testSectorAuthentication(mifareTag, sector, testKeys)
-		if success {
-			successfulAuths++
-		}
-		totalAttempts += attempts
-	}
-
-	mustPrint("\nAuthentication Summary:\n")
-	mustPrintf("  Successful: %d/%d (%.1f%%)\n",
-		successfulAuths, totalAttempts, float64(successfulAuths*100)/float64(totalAttempts))
-
-	variance := mifareTag.GetTimingVariance()
-	mustPrintf("  Timing variance: %.2fms\n", float64(variance.Nanoseconds())/1000000)
-
-	if mifareTag.IsTimingUnstable() {
-		mustPrintln("  WARNING: High timing variance detected - possible hardware issues")
-	} else {
-		mustPrintln("  Timing appears stable")
-	}
-}
-
-// performTimingAttempts runs authentication attempts and collects timing data
-func performTimingAttempts(
-	mifareTag *pn532.MIFARETag,
-	sector uint8,
-	key []byte,
-	attempts int,
-) (timings []time.Duration, successCount int) {
-	timings = make([]time.Duration, 0, attempts)
-	successCount = 0
-
-	for i := 0; i < attempts; i++ {
-		start := time.Now()
-		err := mifareTag.AuthenticateRobust(sector, pn532.MIFAREKeyA, key)
-		duration := time.Since(start)
-		timings = append(timings, duration)
-
-		if err == nil {
-			successCount++
-			mustPrintf("  Attempt %2d: SUCCESS (%.2fms)\n", i+1, float64(duration.Nanoseconds())/1000000)
-		} else {
-			mustPrintf("  Attempt %2d: FAILED  (%.2fms) - %v\n", i+1, float64(duration.Nanoseconds())/1000000, err)
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	return timings, successCount
-}
-
-// calculateTimingStats computes and displays timing statistics
-func calculateTimingStats(timings []time.Duration, successCount, attempts int) {
-	if len(timings) == 0 {
-		return
-	}
-
-	var minTime, maxTime, total time.Duration = timings[0], timings[0], 0
-	for _, timing := range timings {
-		if timing < minTime {
-			minTime = timing
-		}
-		if timing > maxTime {
-			maxTime = timing
-		}
-		total += timing
-	}
-
-	avg := total / time.Duration(len(timings))
-	variance := maxTime - minTime
-
-	mustPrint("\nTiming Statistics:\n")
-	mustPrintf("  Success rate: %d/%d (%.1f%%)\n",
-		successCount, attempts, float64(successCount*100)/float64(attempts))
-	mustPrintf("  Min time: %.2fms\n", float64(minTime.Nanoseconds())/1000000)
-	mustPrintf("  Max time: %.2fms\n", float64(maxTime.Nanoseconds())/1000000)
-	mustPrintf("  Avg time: %.2fms\n", float64(avg.Nanoseconds())/1000000)
-	mustPrintf("  Variance: %.2fms\n", float64(variance.Nanoseconds())/1000000)
-
-	switch {
-	case variance > 1000*time.Millisecond:
-		mustPrintln("  WARNING: High variance (>1000ms) indicates possible hardware issues")
-	case variance > 500*time.Millisecond:
-		mustPrintln("  CAUTION: Moderate variance detected")
-	default:
-		mustPrintln("  Timing appears stable")
-	}
-}
-
-func testTimingAnalysis(tag pn532.Tag) {
-	mifareTag, ok := tag.(*pn532.MIFARETag)
-	if !ok {
-		mustPrintln("Tag is not a MIFARE tag, skipping timing analysis test")
-		return
-	}
-
-	mustPrint("\n=== Testing Timing Analysis ===\n")
-
-	key := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
-	sector := uint8(1)
-	attempts := 10
-
-	mustPrintf("Performing %d authentication attempts to sector %d...\n", attempts, sector)
-
-	timings, successCount := performTimingAttempts(mifareTag, sector, key, attempts)
-	calculateTimingStats(timings, successCount, attempts)
-}
-
 func main() {
 	cfg := parseFlags()
 
@@ -506,28 +194,58 @@ func main() {
 	}
 	defer func() { _ = device.Close() }()
 
-	tag, err := waitForAndCreateTag(device, *cfg.timeout, *cfg.pollInterval)
-	if err != nil {
-		_, _ = fmt.Printf("%v\n", err)
-		return
+	monitor, _ := setupPollingMonitor(device, cfg)
+	defer func() { _ = monitor.Close() }()
+
+	_, _ = fmt.Printf("Waiting for NFC tag (timeout: %s, poll interval: %s)...\n", *cfg.timeout, *cfg.pollInterval)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), *cfg.timeout)
+	defer cancel()
+
+	// Channel to signal completion
+	done := make(chan error, 1)
+
+	// Set up callback for when a card is detected
+	monitor.OnCardDetected = func(detectedTag *pn532.DetectedTag) error {
+		// Create tag from detected tag
+		tag, err := device.CreateTag(detectedTag)
+		if err != nil {
+			wrappedErr := fmt.Errorf("failed to create tag: %w", err)
+			done <- wrappedErr
+			return wrappedErr
+		}
+
+		// Handle write operation if requested
+		if err := writeTextIfRequested(tag, *cfg.writeText); err != nil {
+			done <- err
+			return err
+		}
+
+		// Print tag info
+		_, _ = fmt.Print(tag.DebugInfo())
+
+		// Signal completion
+		done <- nil
+		return nil
 	}
 
-	if err := writeTextIfRequested(tag, *cfg.writeText); err != nil {
-		_, _ = fmt.Printf("%v\n", err)
-		return
+	// Start monitoring in a goroutine
+	go func() {
+		if err := monitor.Start(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			done <- fmt.Errorf("monitoring failed: %w", err)
+		}
+	}()
+
+	// Wait for either tag detection or timeout
+	select {
+	case err := <-done:
+		if err != nil {
+			_, _ = fmt.Printf("%v\n", err)
+		}
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			_, _ = fmt.Printf("timeout: no tag detected within %s\n", *cfg.timeout)
+		}
 	}
-
-	// Run tests if requested
-	if *cfg.testRobust {
-		testRobustAuthentication(tag)
-	}
-
-	if *cfg.testTiming {
-		testTimingAnalysis(tag)
-	}
-
-	_, _ = fmt.Print(tag.DebugInfo())
-
-	// Exit successfully after reading and displaying the tag
-	// Use return instead of os.Exit(0) to allow defer functions to run
 }
