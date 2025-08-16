@@ -71,17 +71,6 @@ jobs:
     
     - name: Run integration tests
       run: go test -v -race -tags=integration ./...
-    
-    - name: Run integration tests with coverage
-      run: go test -v -race -tags=integration -coverprofile=./integration.out ./...
-    
-    - name: Upload integration test coverage
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./integration.out
-        flags: integration
-        name: integration-${{ matrix.os }}-go${{ matrix.go-version }}
-      continue-on-error: true
 
   lint:
     runs-on: ubuntu-latest
