@@ -136,15 +136,15 @@ func (d *Discovery) HandleDiscoveryError(err error) {
 }
 
 // provideDetailedDiscoveryError provides more helpful error messages for common discovery failures
-func (d *Discovery) provideDetailedDiscoveryError(err error) error {
+func (*Discovery) provideDetailedDiscoveryError(err error) error {
 	if errors.Is(err, detection.ErrUnsupportedPlatform) {
-		return fmt.Errorf("reader discovery failed: I2C/SPI detection not supported on this platform, but UART should work. " +
-			"If you have a USB PN532 device, ensure it's connected and not in use by another process. " +
-			"You can check with: lsof | grep '/dev/cu.usbserial' or 'lsof | grep '/dev/ttyUSB'")
+		return errors.New("reader discovery failed: I2C/SPI detection not supported on this platform, " +
+			"but UART should work. If you have a USB PN532 device, ensure it's connected and not in use " +
+			"by another process. You can check with: lsof | grep '/dev/cu.usbserial' or 'lsof | grep '/dev/ttyUSB'")
 	}
 
 	if errors.Is(err, detection.ErrNoDevicesFound) {
-		return fmt.Errorf("reader discovery failed: no PN532 devices found. " +
+		return errors.New("reader discovery failed: no PN532 devices found. " +
 			"Ensure your PN532 device is connected via USB and the driver is loaded. " +
 			"On macOS, USB devices appear as /dev/cu.usbserial-*")
 	}
