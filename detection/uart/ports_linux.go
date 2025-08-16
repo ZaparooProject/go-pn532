@@ -4,6 +4,7 @@ package uart
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,13 +36,13 @@ func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 
 // getSerialPortsFallback returns serial ports without metadata
 // processUSBDevice checks if a tty entry is a USB device and returns its port info
-func processUSBDevice(ctx context.Context, devicesPath string) ([]serialPort, error) {
+func processUSBDevice(_ context.Context, _ string) ([]serialPort, error) {
 	var ports []serialPort
-	
+
 	ttyDir := "/sys/class/tty"
 	entries, err := os.ReadDir(ttyDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read directory %s: %w", ttyDir, err)
 	}
 
 	for _, entry := range entries {
@@ -155,7 +156,7 @@ func readUSBDescriptors(port *serialPort, path string) {
 }
 
 // getBuiltinSerialPorts returns non-USB serial ports
-func getBuiltinSerialPorts(ctx context.Context) ([]serialPort, error) {
+func getBuiltinSerialPorts(_ context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
 	// Check for built-in serial ports
@@ -180,7 +181,7 @@ func getBuiltinSerialPorts(ctx context.Context) ([]serialPort, error) {
 	return ports, nil
 }
 
-func getSerialPortsFallback(ctx context.Context) ([]serialPort, error) {
+func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
 	// Common serial port patterns on Linux

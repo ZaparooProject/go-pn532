@@ -33,62 +33,67 @@ type i2cBusInfo struct {
 
 // probeI2CDevice attempts to communicate with a device at the given I2C address
 // to determine if it's a PN532 chip. Returns true if confirmed and any metadata.
-func probeI2CDevice(ctx context.Context, busPath string, addr uint8, mode detection.Mode) (bool, map[string]string) {
-	metadata := make(map[string]string)
-	
+func probeI2CDevice(
+	ctx context.Context,
+	busPath string,
+	addr uint8,
+	mode detection.Mode,
+) (found bool, metadata map[string]string) {
+	metadata = make(map[string]string)
+
 	// For passive mode, we don't actually probe - just return false
 	if mode == detection.Passive {
 		return false, metadata
 	}
-	
+
 	// Try to open the bus device
 	fileDescriptor, err := syscall.Open(busPath, syscall.O_RDWR, 0)
 	if err != nil {
 		return false, metadata
 	}
 	defer func() { _ = syscall.Close(fileDescriptor) }()
-	
+
 	// Set slave address
-	if err := ioctl(fileDescriptor, I2CSlave, uintptr(addr)); err != nil {
+	if ioctlErr := ioctl(fileDescriptor, I2CSlave, uintptr(addr)); ioctlErr != nil {
 		return false, metadata
 	}
-	
+
 	// Try to perform a simple read to see if device responds
 	// PN532 should respond to a GetFirmwareVersion command (0x02)
 	// This is a very basic probe - just check if something is there
 	testCmd := []byte{0x02} // GetFirmwareVersion command
-	
+
 	// Check context timeout
 	select {
 	case <-ctx.Done():
 		return false, metadata
 	default:
 	}
-	
+
 	// Attempt a simple write/read cycle
 	// This is a minimal probe - in a real implementation you'd want
 	// to send proper PN532 commands and validate responses
-	n, err := syscall.Write(fileDescriptor, testCmd)
-	if err != nil || n != len(testCmd) {
+	bytesWritten, err := syscall.Write(fileDescriptor, testCmd)
+	if err != nil || bytesWritten != len(testCmd) {
 		return false, metadata
 	}
-	
+
 	// Try to read response (basic check)
 	response := make([]byte, 16)
-	n, err = syscall.Read(fileDescriptor, response)
+	bytesRead, err := syscall.Read(fileDescriptor, response)
 	if err != nil {
 		return false, metadata
 	}
-	
+
 	// If we got any response, consider it a potential match
 	// In a real implementation, you'd validate the PN532 response format
-	if n > 0 {
-		metadata["probe_response_length"] = fmt.Sprintf("%d", n)
+	if bytesRead > 0 {
+		metadata["probe_response_length"] = fmt.Sprintf("%d", bytesRead)
 		metadata["bus_path"] = busPath
 		metadata["address"] = fmt.Sprintf("0x%02X", addr)
 		return true, metadata
 	}
-	
+
 	return false, metadata
 }
 
