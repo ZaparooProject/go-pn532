@@ -155,7 +155,7 @@ func NewTransportError(op, port string, err error, errType ErrorType) *Transport
 
 // NewTimeoutError creates a timeout error for transport operations
 func NewTimeoutError(op, port string) *TransportError {
-	return NewTransportError(op, port, ErrTimeout, ErrorTypeTimeout)
+	return NewTransportError(op, port, ErrTransportTimeout, ErrorTypeTimeout)
 }
 
 // NewFrameCorruptedError creates a frame corruption error

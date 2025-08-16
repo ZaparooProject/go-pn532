@@ -1,3 +1,23 @@
+// go-pn532
+// Copyright (c) 2025 The Zaparoo Project Contributors.
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// This file is part of go-pn532.
+//
+// go-pn532 is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// go-pn532 is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with go-pn532; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 package pn532
 
 import (
@@ -15,8 +35,8 @@ func TestDevice_DetectTag(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
 		setupMock   func(*MockTransport)
+		name        string
 		expectTag   bool
 		expectError bool
 	}{
@@ -25,7 +45,8 @@ func TestDevice_DetectTag(t *testing.T) {
 			setupMock: func(mock *MockTransport) {
 				mock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
 				mock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
-				mock.SetResponse(testutil.CmdInListPassiveTarget, testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
+				mock.SetResponse(testutil.CmdInListPassiveTarget,
+					testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
 			},
 			expectTag: true,
 		},
@@ -71,15 +92,16 @@ func TestDevice_DetectTag(t *testing.T) {
 			// Test tag detection
 			tag, err := device.DetectTag()
 
-			if tt.expectError {
-				assert.Error(t, err)
+			switch {
+			case tt.expectError:
+				require.Error(t, err)
 				assert.Nil(t, tag)
-			} else if tt.expectTag {
-				assert.NoError(t, err)
+			case tt.expectTag:
+				require.NoError(t, err)
 				assert.NotNil(t, tag)
 				assert.NotEmpty(t, tag.UID)
-			} else {
-				assert.NoError(t, err)
+			default:
+				require.NoError(t, err)
 				assert.Nil(t, tag)
 			}
 		})
@@ -90,8 +112,8 @@ func TestDevice_WaitForTag(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
 		setupMock   func(*MockTransport)
+		name        string
 		timeout     time.Duration
 		expectError bool
 		expectTag   bool
@@ -101,7 +123,8 @@ func TestDevice_WaitForTag(t *testing.T) {
 			setupMock: func(mock *MockTransport) {
 				mock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
 				mock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
-				mock.SetResponse(testutil.CmdInListPassiveTarget, testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
+				mock.SetResponse(testutil.CmdInListPassiveTarget,
+					testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
 			},
 			timeout:     time.Second,
 			expectError: false,
@@ -147,24 +170,27 @@ func TestDevice_WaitForTag(t *testing.T) {
 			tag, err := device.WaitForTag(waitCtx)
 			elapsed := time.Since(start)
 
-			if tt.expectError {
-				assert.Error(t, err)
+			switch {
+			case tt.expectError:
+				require.Error(t, err)
 				assert.Nil(t, tag)
 				// For timeout test, verify we get context deadline exceeded and that it actually waited
 				if tt.name == "Timeout_No_Tag" {
-					assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected context deadline exceeded error, got: %v", err)
+					require.ErrorIs(t, err, context.DeadlineExceeded,
+						"Expected context deadline exceeded error, got: %v", err)
 					// Verify it actually waited close to the timeout duration
-					assert.GreaterOrEqual(t, elapsed, tt.timeout-50*time.Millisecond, "Should have waited close to timeout duration")
+					assert.GreaterOrEqual(t, elapsed, tt.timeout-50*time.Millisecond,
+						"Should have waited close to timeout duration")
 					// Verify polling happened multiple times
 					callCount := mock.GetCallCount(testutil.CmdInListPassiveTarget)
 					assert.Greater(t, callCount, 1, "Should have made multiple polling attempts")
 				}
-			} else if tt.expectTag {
-				assert.NoError(t, err)
+			case tt.expectTag:
+				require.NoError(t, err)
 				assert.NotNil(t, tag)
 				assert.NotEmpty(t, tag.UID)
-			} else {
-				assert.NoError(t, err)
+			default:
+				require.NoError(t, err)
 				assert.Nil(t, tag)
 			}
 		})
@@ -175,8 +201,8 @@ func TestDevice_SimplePoll(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
+		name          string
 		pollingPeriod time.Duration
 		timeout       time.Duration
 		expectTag     bool
@@ -187,7 +213,8 @@ func TestDevice_SimplePoll(t *testing.T) {
 			setupMock: func(mock *MockTransport) {
 				mock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
 				mock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
-				mock.SetResponse(testutil.CmdInListPassiveTarget, testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
+				mock.SetResponse(testutil.CmdInListPassiveTarget,
+					testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
 			},
 			pollingPeriod: 50 * time.Millisecond,
 			timeout:       time.Second,
@@ -231,10 +258,10 @@ func TestDevice_SimplePoll(t *testing.T) {
 			tag, err := device.SimplePoll(pollCtx, tt.pollingPeriod)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				assert.Nil(t, tag)
 			} else if tt.expectTag {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, tag)
 				assert.NotEmpty(t, tag.UID)
 			}
@@ -256,7 +283,8 @@ func TestDevice_DetectTags_WithFilters(t *testing.T) {
 	mock := NewMockTransport()
 	mock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
 	mock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
-	mock.SetResponse(testutil.CmdInListPassiveTarget, testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
+	mock.SetResponse(testutil.CmdInListPassiveTarget,
+		testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
 
 	device, err := New(mock)
 	require.NoError(t, err)
@@ -269,12 +297,12 @@ func TestDevice_DetectTags_WithFilters(t *testing.T) {
 
 	// Test detection with basic parameters (maxTags=1, baudRate=0)
 	tags, err := device.DetectTags(1, 0)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, tags, 1)
 
 	// Test detection with multiple targets
 	tags, err = device.DetectTags(2, 0)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	// Should still return just 1 tag since mock only provides 1
 	assert.LessOrEqual(t, len(tags), 1)
 }
@@ -360,27 +388,29 @@ func TestFilterDetectedTags(t *testing.T) {
 	}
 }
 
-func TestDevice_InRelease(t *testing.T) {
-	t.Parallel()
+// Helper function for testing In commands (InRelease/InSelect)
+func testInCommand(t *testing.T, testName string, cmd byte, deviceFunc func(*Device, byte) error) {
+	t.Helper()
 
 	tests := []struct {
-		name        string
 		setupMock   func(*MockTransport)
+		name        string
 		targetID    byte
 		expectError bool
 	}{
 		{
-			name: "Successful_Release",
+			name: "Successful_" + testName,
 			setupMock: func(mock *MockTransport) {
-				mock.SetResponse(testutil.CmdInRelease, []byte{0x53, 0x00}) // Correct format: cmd response + success status
+				// Correct format: cmd response + success status
+				mock.SetResponse(cmd, []byte{cmd + 1, 0x00})
 			},
 			targetID:    1,
 			expectError: false,
 		},
 		{
-			name: "Release_Error",
+			name: testName + "_Error",
 			setupMock: func(mock *MockTransport) {
-				mock.SetError(testutil.CmdInRelease, errors.New("release failed"))
+				mock.SetError(cmd, errors.New(testName+" failed"))
 			},
 			targetID:    1,
 			expectError: true,
@@ -399,67 +429,25 @@ func TestDevice_InRelease(t *testing.T) {
 			device, err := New(mock)
 			require.NoError(t, err)
 
-			// Test InRelease
-			err = device.InRelease(tt.targetID)
+			// Test the command
+			err = deviceFunc(device, tt.targetID)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, 1, mock.GetCallCount(testutil.CmdInRelease))
+				require.NoError(t, err)
+				assert.Equal(t, 1, mock.GetCallCount(cmd))
 			}
 		})
 	}
 }
 
+func TestDevice_InRelease(t *testing.T) {
+	t.Parallel()
+	testInCommand(t, "Release", testutil.CmdInRelease, (*Device).InRelease)
+}
+
 func TestDevice_InSelect(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name        string
-		setupMock   func(*MockTransport)
-		targetID    byte
-		expectError bool
-	}{
-		{
-			name: "Successful_Select",
-			setupMock: func(mock *MockTransport) {
-				mock.SetResponse(testutil.CmdInSelect, []byte{0x55, 0x00}) // Correct format: cmd response + success status
-			},
-			targetID:    1,
-			expectError: false,
-		},
-		{
-			name: "Select_Error",
-			setupMock: func(mock *MockTransport) {
-				mock.SetError(testutil.CmdInSelect, errors.New("select failed"))
-			},
-			targetID:    1,
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Setup mock transport
-			mock := NewMockTransport()
-			tt.setupMock(mock)
-
-			// Create device
-			device, err := New(mock)
-			require.NoError(t, err)
-
-			// Test InSelect
-			err = device.InSelect(tt.targetID)
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, 1, mock.GetCallCount(testutil.CmdInSelect))
-			}
-		})
-	}
+	testInCommand(t, "Select", testutil.CmdInSelect, (*Device).InSelect)
 }

@@ -157,12 +157,12 @@ func (t *TransportWithRetry) SetRetryConfig(config *RetryConfig) {
 
 // MockTransport provides a mock implementation of Transport for testing
 type MockTransport struct {
-	connected bool
+	responses map[byte][]byte
+	callCount map[byte]int
+	errorMap  map[byte]error
 	timeout   time.Duration
-	responses map[byte][]byte // Map command to response
-	callCount map[byte]int    // Track how many times each command was called
-	delay     time.Duration   // Simulate hardware delay
-	errorMap  map[byte]error  // Inject errors for specific commands
+	delay     time.Duration
+	connected bool
 }
 
 // NewMockTransport creates a new mock transport
@@ -178,7 +178,7 @@ func NewMockTransport() *MockTransport {
 }
 
 // SendCommand implements Transport interface
-func (m *MockTransport) SendCommand(cmd byte, args []byte) ([]byte, error) {
+func (m *MockTransport) SendCommand(cmd byte, _ []byte) ([]byte, error) {
 	if !m.connected {
 		return nil, errors.New("transport not connected")
 	}
@@ -223,7 +223,7 @@ func (m *MockTransport) IsConnected() bool {
 }
 
 // Type implements Transport interface
-func (m *MockTransport) Type() TransportType {
+func (*MockTransport) Type() TransportType {
 	return TransportMock
 }
 

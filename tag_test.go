@@ -1,3 +1,23 @@
+// go-pn532
+// Copyright (c) 2025 The Zaparoo Project Contributors.
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// This file is part of go-pn532.
+//
+// go-pn532 is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// go-pn532 is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with go-pn532; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 package pn532
 
 import (
@@ -58,8 +78,8 @@ func TestBaseTag_UID(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		uid      []byte
 		expected string
+		uid      []byte
 	}{
 		{
 			name:     "4_byte_UID",
@@ -196,7 +216,7 @@ func TestBaseTag_ReadBlock(t *testing.T) {
 	tag := &BaseTag{}
 	data, err := tag.ReadBlock(4)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, data)
 	assert.Equal(t, ErrNotImplemented, err)
 }
@@ -207,7 +227,7 @@ func TestBaseTag_WriteBlock(t *testing.T) {
 	tag := &BaseTag{}
 	err := tag.WriteBlock(4, []byte{0x01, 0x02, 0x03, 0x04})
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Equal(t, ErrNotImplemented, err)
 }
 
@@ -217,7 +237,7 @@ func TestBaseTag_ReadNDEF(t *testing.T) {
 	tag := &BaseTag{}
 	data, err := tag.ReadNDEF()
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, data)
 	assert.Equal(t, ErrNotImplemented, err)
 }
@@ -233,7 +253,7 @@ func TestBaseTag_WriteNDEF(t *testing.T) {
 	}
 	err := tag.WriteNDEF(message)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Equal(t, ErrNotImplemented, err)
 }
 
@@ -253,7 +273,7 @@ func TestBaseTag_ReadText(t *testing.T) {
 
 	// Test ReadText calls ReadNDEF (which will return ErrNotImplemented)
 	text, err := tag.ReadText()
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Empty(t, text)
 	assert.Equal(t, ErrNotImplemented, err)
 }
@@ -274,7 +294,7 @@ func TestBaseTag_WriteText(t *testing.T) {
 
 	// Test WriteText calls WriteNDEF (which will return ErrNotImplemented)
 	err = tag.WriteText("Hello, World!")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Equal(t, ErrNotImplemented, err)
 }
 
@@ -421,11 +441,11 @@ func TestNewNTAGTag(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
 		device   *Device
+		expected *NTAGTag
+		name     string
 		uid      []byte
 		sak      byte
-		expected *NTAGTag
 	}{
 		{
 			name:   "Valid_NTAG_Creation",
@@ -456,29 +476,48 @@ func TestNewNTAGTag(t *testing.T) {
 			assert.NotNil(t, result)
 			assert.Equal(t, TagTypeNTAG, result.Type())
 			assert.Equal(t, tt.uid, result.UIDBytes())
-			assert.Equal(t, tt.device, result.BaseTag.device)
-			assert.Equal(t, tt.sak, result.BaseTag.sak)
+			assert.Equal(t, tt.device, result.device)
+			assert.Equal(t, tt.sak, result.sak)
 		})
 	}
+}
+
+// Helper function for testing read block error handling
+func checkReadBlockError(t *testing.T, err error, errorContains string, data []byte) {
+	t.Helper()
+	require.Error(t, err)
+	if errorContains != "" {
+		assert.Contains(t, err.Error(), errorContains)
+	}
+	assert.Nil(t, data)
+}
+
+func checkReadBlockSuccess(t *testing.T, err error, data, expectedData []byte) {
+	t.Helper()
+	require.NoError(t, err)
+	assert.Equal(t, expectedData, data)
 }
 
 func TestNTAGTag_ReadBlock(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
+		expectedData  []byte
 		block         uint8
 		expectError   bool
-		expectedData  []byte
-		errorContains string
 	}{
 		{
 			name: "Successful_Block_Read",
 			setupMock: func(mt *MockTransport) {
 				// NTAG ReadBlock returns 16 bytes (4 blocks) but only first 4 are used
 				// Response format: 0x41 (InDataExchange response), 0x00 (success status), 16 bytes of data
-				mt.SetResponse(0x40, []byte{0x41, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10})
+				mt.SetResponse(0x40, []byte{
+					0x41, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+					0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+				})
 			},
 			block:        4,
 			expectError:  false,
@@ -525,14 +564,9 @@ func TestNTAGTag_ReadBlock(t *testing.T) {
 			data, err := tag.ReadBlock(tt.block)
 
 			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-				assert.Nil(t, data)
+				checkReadBlockError(t, err, tt.errorContains, data)
 			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedData, data)
+				checkReadBlockSuccess(t, err, data, tt.expectedData)
 			}
 		})
 	}
@@ -542,12 +576,12 @@ func TestNTAGTag_WriteBlock(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
-		block         uint8
-		data          []byte
-		expectError   bool
+		name          string
 		errorContains string
+		data          []byte
+		block         uint8
+		expectError   bool
 	}{
 		{
 			name: "Successful_Block_Write",
@@ -581,7 +615,7 @@ func TestNTAGTag_WriteBlock(t *testing.T) {
 		},
 		{
 			name: "Data_Too_Large",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No command expected as validation should fail early
 			},
 			block:         4,
@@ -591,7 +625,7 @@ func TestNTAGTag_WriteBlock(t *testing.T) {
 		},
 		{
 			name: "Data_Too_Small",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No command expected as validation should fail early
 			},
 			block:         4,
@@ -613,7 +647,7 @@ func TestNTAGTag_WriteBlock(t *testing.T) {
 			err := tag.WriteBlock(tt.block, tt.data)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
@@ -628,11 +662,11 @@ func TestNTAGTag_GetVersion(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
 		expectError   bool
 		expectedType  NTAGType
-		errorContains string
 	}{
 		{
 			name: "NTAG213_Version",
@@ -697,7 +731,7 @@ func TestNTAGTag_GetVersion(t *testing.T) {
 			version, err := tag.GetVersion()
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
@@ -718,13 +752,13 @@ func TestNTAGTag_FastRead(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
+		expectedData  []byte
 		startBlock    uint8
 		endBlock      uint8
 		expectError   bool
-		expectedData  []byte
-		errorContains string
 	}{
 		{
 			name: "Successful_FastRead",
@@ -741,9 +775,9 @@ func TestNTAGTag_FastRead(t *testing.T) {
 				}
 				mt.SetResponse(0x42, data)
 			},
-			startBlock:   4,
-			endBlock:     7,
-			expectError:  false,
+			startBlock:  4,
+			endBlock:    7,
+			expectError: false,
 			expectedData: func() []byte {
 				// FastRead should return (7-4+1) * 4 = 16 bytes
 				data := make([]byte, 16)
@@ -787,13 +821,13 @@ func TestNTAGTag_FastRead(t *testing.T) {
 			data, err := tag.FastRead(tt.startBlock, tt.endBlock)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
 				assert.Nil(t, data)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, tt.expectedData, data)
 			}
 		})
@@ -869,15 +903,16 @@ func TestNDEFRecord_Structure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.record.Type, tt.record.Type)
+			// Verify record structure is properly set
+			assert.NotEmpty(t, tt.record.Type)
 			if tt.record.Text != "" {
-				assert.Equal(t, tt.record.Text, tt.record.Text)
+				assert.NotEmpty(t, tt.record.Text)
 			}
 			if tt.record.URI != "" {
-				assert.Equal(t, tt.record.URI, tt.record.URI)
+				assert.NotEmpty(t, tt.record.URI)
 			}
 			if tt.record.Payload != nil {
-				assert.Equal(t, tt.record.Payload, tt.record.Payload)
+				assert.NotEmpty(t, tt.record.Payload)
 			}
 		})
 	}
@@ -908,7 +943,7 @@ func TestBuildNDEFMessage(t *testing.T) {
 		},
 		{
 			name:        "Unicode_Text",
-			text:        "Hello, 世界! 🌍",
+			text:        "Hello, Café! 🌍",
 			expectError: false,
 		},
 	}
@@ -920,13 +955,13 @@ func TestBuildNDEFMessage(t *testing.T) {
 			data, err := BuildNDEFMessage(tt.text)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				assert.Nil(t, data)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, data)
-				assert.True(t, len(data) > 0)
-				
+				assert.NotEmpty(t, data)
+
 				// Verify the data starts with NDEF header (0x03)
 				assert.Equal(t, byte(0x03), data[0])
 			}
@@ -939,9 +974,9 @@ func TestBuildNDEFMessageEx(t *testing.T) {
 
 	tests := []struct {
 		name          string
+		errorContains string
 		records       []NDEFRecord
 		expectError   bool
-		errorContains string
 	}{
 		{
 			name: "Single_Text_Record",
@@ -1000,16 +1035,16 @@ func TestBuildNDEFMessageEx(t *testing.T) {
 			data, err := BuildNDEFMessageEx(tt.records)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
 				assert.Nil(t, data)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, data)
-				assert.True(t, len(data) > 0)
-				
+				assert.NotEmpty(t, data)
+
 				// Verify the data starts with NDEF header (0x03)
 				assert.Equal(t, byte(0x03), data[0])
 			}
@@ -1021,11 +1056,11 @@ func TestParseNDEFMessage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupData     func() []byte
-		expectError   bool
-		expectedCount int
+		name          string
 		errorContains string
+		expectedCount int
+		expectError   bool
 	}{
 		{
 			name: "Valid_Text_Message",
@@ -1086,13 +1121,13 @@ func TestParseNDEFMessage(t *testing.T) {
 			message, err := ParseNDEFMessage(data)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
 				assert.Nil(t, message)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, message)
 				assert.Len(t, message.Records, tt.expectedCount)
 			}
@@ -1145,34 +1180,66 @@ func TestNDEF_RoundTrip(t *testing.T) {
 			// Verify record count matches
 			assert.Len(t, message.Records, len(tt.records))
 
-			// Verify record content (for simple cases)
-			for i, original := range tt.records {
-				if i < len(message.Records) {
-					parsed := message.Records[i]
-					assert.Equal(t, original.Type, parsed.Type)
-					if original.Text != "" {
-						assert.Equal(t, original.Text, parsed.Text)
-					}
-					if original.URI != "" {
-						assert.Equal(t, original.URI, parsed.URI)
-					}
-				}
-			}
+			// Verify record content
+			verifyNDEFRecords(t, tt.records, message.Records)
 		})
+	}
+}
+
+func verifyNDEFRecords(t *testing.T, original, parsed []NDEFRecord) {
+	t.Helper()
+
+	// Verify record content (for simple cases)
+	for i, originalRecord := range original {
+		if i < len(parsed) {
+			parsedRecord := parsed[i]
+			assert.Equal(t, originalRecord.Type, parsedRecord.Type)
+			if originalRecord.Text != "" {
+				assert.Equal(t, originalRecord.Text, parsedRecord.Text)
+			}
+			if originalRecord.URI != "" {
+				assert.Equal(t, originalRecord.URI, parsedRecord.URI)
+			}
+		}
 	}
 }
 
 // MIFARE Classic Tests
 
+// TestMIFAREConfig returns test-friendly MIFARE configuration with minimal delays
+// This should only be used in tests to speed up test execution
+// testMIFAREConfig returns test-friendly MIFARE configuration with minimal delays
+// This should only be used in tests to speed up test execution
+func testMIFAREConfig() *MIFAREConfig {
+	return &MIFAREConfig{
+		RetryConfig: &RetryConfig{
+			MaxAttempts:       5,
+			InitialBackoff:    1 * time.Microsecond,
+			MaxBackoff:        10 * time.Microsecond,
+			BackoffMultiplier: 2.0,
+			Jitter:            0.1,
+			RetryTimeout:      1 * time.Second,
+		},
+		HardwareDelay: 1 * time.Microsecond, // Minimal hardware timing for tests
+	}
+}
+
+// newTestMIFARETag creates a MIFARE tag with fast test configuration
+func newTestMIFARETag(device *Device, uid []byte, sak byte) *MIFARETag {
+	tag := NewMIFARETag(device, uid, sak)
+	tag.SetConfig(testMIFAREConfig()) // Apply fast test timing
+	return tag
+}
+
 func TestNewMIFARETag(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
 		device   *Device
+		expected *MIFARETag
+		name     string
 		uid      []byte
 		sak      byte
-		expected *MIFARETag
 	}{
 		{
 			name:   "Valid_MIFARE_Creation",
@@ -1203,55 +1270,60 @@ func TestNewMIFARETag(t *testing.T) {
 			assert.NotNil(t, result)
 			assert.Equal(t, TagTypeMIFARE, result.Type())
 			assert.Equal(t, tt.uid, result.UIDBytes())
-			assert.Equal(t, tt.device, result.BaseTag.device)
-			assert.Equal(t, tt.sak, result.BaseTag.sak)
+			assert.Equal(t, tt.device, result.device)
+			assert.Equal(t, tt.sak, result.sak)
 			assert.Equal(t, -1, result.lastAuthSector) // Should start unauthenticated
 		})
 	}
 }
 
-func TestMIFARETag_ReadBlock(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
+func getMIFAREReadBlockTestCases() []struct {
+	setupMock     func(*MockTransport)
+	setupAuth     func(*MIFARETag)
+	name          string
+	errorContains string
+	expectedData  []byte
+	block         uint8
+	expectError   bool
+} {
+	return []struct {
 		setupMock     func(*MockTransport)
 		setupAuth     func(*MIFARETag)
+		name          string
+		errorContains string
+		expectedData  []byte
 		block         uint8
 		expectError   bool
-		expectedData  []byte
-		errorContains string
 	}{
 		{
 			name: "Successful_Block_Read",
 			setupMock: func(mt *MockTransport) {
-				// Mock response for InDataExchange with READ command
-				// MIFARE Classic returns 16 bytes on read
-				data := make([]byte, 18) // Status + 16 bytes data
-				data[0] = 0x41           // InDataExchange response
-				data[1] = 0x00           // Success status
+				data := make([]byte, 18)
+				data[0] = 0x41
+				data[1] = 0x00
 				for i := 2; i < 18; i++ {
-					data[i] = byte(i - 2) // Fill with test data
+					data[i] = byte(i - 2)
 				}
 				mt.SetResponse(0x40, data)
 			},
 			setupAuth: func(tag *MIFARETag) {
-				// Simulate authenticated state for sector 1 (block 4)
 				tag.authMutex.Lock()
 				tag.lastAuthSector = 1
 				tag.authMutex.Unlock()
 			},
-			block:        4,
-			expectError:  false,
-			expectedData: []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F},
+			block:       4,
+			expectError: false,
+			expectedData: []byte{
+				0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+			},
 		},
 		{
 			name: "Not_Authenticated_Error",
-			setupMock: func(mt *MockTransport) {
-				// No setup needed - should fail before transport call
+			setupMock: func(_ *MockTransport) {
+				// No setup needed
 			},
-			setupAuth: func(tag *MIFARETag) {
-				// Leave unauthenticated (lastAuthSector = -1)
+			setupAuth: func(_ *MIFARETag) {
+				// Leave unauthenticated
 			},
 			block:         4,
 			expectError:   true,
@@ -1263,7 +1335,6 @@ func TestMIFARETag_ReadBlock(t *testing.T) {
 				mt.SetError(0x40, errors.New("transport error"))
 			},
 			setupAuth: func(tag *MIFARETag) {
-				// Simulate authenticated state
 				tag.authMutex.Lock()
 				tag.lastAuthSector = 1
 				tag.authMutex.Unlock()
@@ -1275,7 +1346,7 @@ func TestMIFARETag_ReadBlock(t *testing.T) {
 		{
 			name: "Short_Response",
 			setupMock: func(mt *MockTransport) {
-				mt.SetResponse(0x40, []byte{0x41, 0x00, 0x01, 0x02}) // Only 2 bytes data (< 16 bytes)
+				mt.SetResponse(0x40, []byte{0x41, 0x00, 0x01, 0x02})
 			},
 			setupAuth: func(tag *MIFARETag) {
 				tag.authMutex.Lock()
@@ -1287,6 +1358,12 @@ func TestMIFARETag_ReadBlock(t *testing.T) {
 			errorContains: "invalid read response length",
 		},
 	}
+}
+
+func TestMIFARETag_ReadBlock(t *testing.T) {
+	t.Parallel()
+
+	tests := getMIFAREReadBlockTestCases()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1295,20 +1372,15 @@ func TestMIFARETag_ReadBlock(t *testing.T) {
 			device, mockTransport := createMockDeviceWithTransport(t)
 			tt.setupMock(mockTransport)
 
-			tag := NewMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
+			tag := newTestMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
 			tt.setupAuth(tag)
 
 			data, err := tag.ReadBlock(tt.block)
 
 			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-				assert.Nil(t, data)
+				checkReadBlockError(t, err, tt.errorContains, data)
 			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedData, data)
+				checkReadBlockSuccess(t, err, data, tt.expectedData)
 			}
 		})
 	}
@@ -1317,14 +1389,74 @@ func TestMIFARETag_ReadBlock(t *testing.T) {
 func TestMIFARETag_WriteBlock(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name          string
+	tests := getMIFAREWriteBlockTestCases()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			device, mockTransport := createMockDeviceWithTransport(t)
+			tt.setupMock(mockTransport)
+
+			tag := newTestMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
+			tt.setupAuth(tag)
+
+			err := tag.WriteBlock(tt.block, tt.data)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func getMIFAREWriteBlockTestCases() []struct {
+	setupMock     func(*MockTransport)
+	setupAuth     func(*MIFARETag)
+	name          string
+	errorContains string
+	data          []byte
+	block         uint8
+	expectError   bool
+} {
+	cases := []struct {
 		setupMock     func(*MockTransport)
 		setupAuth     func(*MIFARETag)
-		block         uint8
-		data          []byte
-		expectError   bool
+		name          string
 		errorContains string
+		data          []byte
+		block         uint8
+		expectError   bool
+	}{}
+
+	cases = append(cases, getMIFAREWriteSuccessCases()...)
+	cases = append(cases, getMIFAREWriteErrorCases()...)
+
+	return cases
+}
+
+func getMIFAREWriteSuccessCases() []struct {
+	setupMock     func(*MockTransport)
+	setupAuth     func(*MIFARETag)
+	name          string
+	errorContains string
+	data          []byte
+	block         uint8
+	expectError   bool
+} {
+	return []struct {
+		setupMock     func(*MockTransport)
+		setupAuth     func(*MIFARETag)
+		name          string
+		errorContains string
+		data          []byte
+		block         uint8
+		expectError   bool
 	}{
 		{
 			name: "Successful_Block_Write",
@@ -1342,12 +1474,33 @@ func TestMIFARETag_WriteBlock(t *testing.T) {
 			data:        make([]byte, 16), // 16 bytes for MIFARE Classic
 			expectError: false,
 		},
+	}
+}
+
+func getMIFAREWriteErrorCases() []struct {
+	setupMock     func(*MockTransport)
+	setupAuth     func(*MIFARETag)
+	name          string
+	errorContains string
+	data          []byte
+	block         uint8
+	expectError   bool
+} {
+	return []struct {
+		setupMock     func(*MockTransport)
+		setupAuth     func(*MIFARETag)
+		name          string
+		errorContains string
+		data          []byte
+		block         uint8
+		expectError   bool
+	}{
 		{
 			name: "Not_Authenticated_Error",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No setup needed - should fail before transport call
 			},
-			setupAuth: func(tag *MIFARETag) {
+			setupAuth: func(_ *MIFARETag) {
 				// Leave unauthenticated
 			},
 			block:         4,
@@ -1357,7 +1510,7 @@ func TestMIFARETag_WriteBlock(t *testing.T) {
 		},
 		{
 			name: "Invalid_Block_Size",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No setup needed - should fail validation
 			},
 			setupAuth: func(tag *MIFARETag) {
@@ -1372,7 +1525,7 @@ func TestMIFARETag_WriteBlock(t *testing.T) {
 		},
 		{
 			name: "Manufacturer_Block_Protection",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No setup needed - should fail validation
 			},
 			setupAuth: func(tag *MIFARETag) {
@@ -1401,6 +1554,12 @@ func TestMIFARETag_WriteBlock(t *testing.T) {
 			errorContains: "failed to write block",
 		},
 	}
+}
+
+func TestMIFARETag_Authenticate(t *testing.T) {
+	t.Parallel()
+
+	tests := getMIFAREAuthenticateTestCases()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1409,34 +1568,44 @@ func TestMIFARETag_WriteBlock(t *testing.T) {
 			device, mockTransport := createMockDeviceWithTransport(t)
 			tt.setupMock(mockTransport)
 
-			tag := NewMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
-			tt.setupAuth(tag)
+			tag := newTestMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
 
-			err := tag.WriteBlock(tt.block, tt.data)
+			err := tag.Authenticate(tt.sector, tt.keyType, tt.key)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
+				// Should reset auth state on failure
+				assert.Equal(t, -1, tag.lastAuthSector)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
+				// Should update auth state on success
+				assert.Equal(t, int(tt.sector), tag.lastAuthSector)
+				assert.Equal(t, tt.keyType, tag.lastAuthKeyType)
 			}
 		})
 	}
 }
 
-func TestMIFARETag_Authenticate(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
+func getMIFAREAuthenticateTestCases() []struct {
+	setupMock     func(*MockTransport)
+	name          string
+	errorContains string
+	key           []byte
+	sector        uint8
+	keyType       byte
+	expectError   bool
+} {
+	return []struct {
 		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
+		key           []byte
 		sector        uint8
 		keyType       byte
-		key           []byte
 		expectError   bool
-		errorContains string
 	}{
 		{
 			name: "Successful_Authentication_KeyA",
@@ -1445,7 +1614,7 @@ func TestMIFARETag_Authenticate(t *testing.T) {
 				mt.SetResponse(0x40, []byte{0x41, 0x00}) // Success status
 			},
 			sector:      1,
-			keyType:     0x00, // Key A
+			keyType:     0x00,                                       // Key A
 			key:         []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, // Default key
 			expectError: false,
 		},
@@ -1461,7 +1630,7 @@ func TestMIFARETag_Authenticate(t *testing.T) {
 		},
 		{
 			name: "Invalid_Key_Length",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No setup needed - should fail validation
 			},
 			sector:        1,
@@ -1472,7 +1641,7 @@ func TestMIFARETag_Authenticate(t *testing.T) {
 		},
 		{
 			name: "Invalid_Key_Type",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No setup needed - should fail validation
 			},
 			sector:        1,
@@ -1505,45 +1674,18 @@ func TestMIFARETag_Authenticate(t *testing.T) {
 			errorContains: "authentication failed",
 		},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			device, mockTransport := createMockDeviceWithTransport(t)
-			tt.setupMock(mockTransport)
-
-			tag := NewMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
-
-			err := tag.Authenticate(tt.sector, tt.keyType, tt.key)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-				// Should reset auth state on failure
-				assert.Equal(t, -1, tag.lastAuthSector)
-			} else {
-				assert.NoError(t, err)
-				// Should update auth state on success
-				assert.Equal(t, int(tt.sector), tag.lastAuthSector)
-				assert.Equal(t, tt.keyType, tag.lastAuthKeyType)
-			}
-		})
-	}
 }
 
 func TestMIFARETag_ReadBlockDirect(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
+		expectedData  []byte
 		block         uint8
 		expectError   bool
-		expectedData  []byte
-		errorContains string
 	}{
 		{
 			name: "Successful_Direct_Read",
@@ -1557,16 +1699,18 @@ func TestMIFARETag_ReadBlockDirect(t *testing.T) {
 				}
 				mt.SetResponse(0x40, data)
 			},
-			block:        4,
-			expectError:  false,
-			expectedData: []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F},
+			block:       4,
+			expectError: false,
+			expectedData: []byte{
+				0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+			},
 		},
 		{
 			name: "Fallback_To_CommunicateThru",
 			setupMock: func(mt *MockTransport) {
 				// First call (InDataExchange) fails with error 01, second call (InCommunicateThru) succeeds
 				mt.SetError(0x40, errors.New("data exchange error: 01"))
-				
+
 				// Setup InCommunicateThru response
 				data := make([]byte, 18) // Header + Status + 16 bytes data
 				data[0] = 0x43           // InCommunicateThru response
@@ -1576,9 +1720,11 @@ func TestMIFARETag_ReadBlockDirect(t *testing.T) {
 				}
 				mt.SetResponse(0x42, data)
 			},
-			block:        4,
-			expectError:  false,
-			expectedData: []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F},
+			block:       4,
+			expectError: false,
+			expectedData: []byte{
+				0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+			},
 		},
 		{
 			name: "Transport_Error",
@@ -1607,19 +1753,14 @@ func TestMIFARETag_ReadBlockDirect(t *testing.T) {
 			device, mockTransport := createMockDeviceWithTransport(t)
 			tt.setupMock(mockTransport)
 
-			tag := NewMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
+			tag := newTestMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, 0x08)
 
 			data, err := tag.ReadBlockDirect(tt.block)
 
 			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-				assert.Nil(t, data)
+				checkReadBlockError(t, err, tt.errorContains, data)
 			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedData, data)
+				checkReadBlockSuccess(t, err, data, tt.expectedData)
 			}
 		})
 	}
@@ -1628,87 +1769,7 @@ func TestMIFARETag_ReadBlockDirect(t *testing.T) {
 func TestMIFARETag_WriteBlockDirect(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name          string
-		setupMock     func(*MockTransport)
-		block         uint8
-		data          []byte
-		expectError   bool
-		errorContains string
-	}{
-		{
-			name: "Successful_Direct_Write_via_Fallback",
-			setupMock: func(mt *MockTransport) {
-				// Simulate read timeout to trigger SendRawCommand fallback
-				mt.SetError(0x40, errors.New("data exchange error: 01"))
-				
-				// Setup response for readBlockCommunicateThru fallback (SendRawCommand)
-				readData := make([]byte, 18)
-				readData[0] = 0x43 // InCommunicateThru response
-				readData[1] = 0x00 // Success status
-				for i := 2; i < 18; i++ {
-					readData[i] = byte(i - 2)
-				}
-				mt.SetResponse(0x42, readData) // SendRawCommand for read validation
-				
-				// Note: The write will also fail with timeout error and use writeBlockDirectAlternative
-				// which eventually calls writeBlockCommunicateThru via SendRawCommand
-				// This tests the full fallback chain for clone tags
-			},
-			block: 4,
-			data:  []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10},
-		},
-		{
-			name: "Successful_Direct_Write_Normal_Path",
-			setupMock: func(mt *MockTransport) {
-				// For read validation (first call to SendDataExchange)
-				readData := make([]byte, 18)
-				readData[0] = 0x41 // InDataExchange response
-				readData[1] = 0x00 // Success status  
-				for i := 2; i < 18; i++ {
-					readData[i] = byte(i - 2)
-				}
-				mt.SetResponse(0x40, readData)
-				
-				// The write will also use SendDataExchange but MockTransport 
-				// will return the same response (which is fine for success case)
-			},
-			block: 4,
-			data:  []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10},
-		},
-		{
-			name: "Invalid_Block_Size",
-			setupMock: func(mt *MockTransport) {
-				// No setup needed - validation happens before transport call
-			},
-			block:         4,
-			data:          []byte{0x01, 0x02, 0x03}, // Too short
-			expectError:   true,
-			errorContains: "invalid block size",
-		},
-		{
-			name: "Manufacturer_Block_Protection",
-			setupMock: func(mt *MockTransport) {
-				// No setup needed - validation happens before transport call
-			},
-			block:         0, // Manufacturer block
-			data:          []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10},
-			expectError:   true,
-			errorContains: "cannot write to manufacturer block",
-		},
-		{
-			name: "Read_Validation_Failure",
-			setupMock: func(mt *MockTransport) {
-				// Set error for both SendDataExchange and SendRawCommand
-				mt.SetError(0x40, errors.New("data exchange error: 14"))
-				mt.SetError(0x42, errors.New("raw read command failed"))
-			},
-			block:         4,
-			data:          []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10},
-			expectError:   true,
-			errorContains: "clone tag does not support direct block access",
-		},
-	}
+	tests := getMIFAREWriteBlockDirectTestCases()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1722,13 +1783,13 @@ func TestMIFARETag_WriteBlockDirect(t *testing.T) {
 
 			// Create MIFARE tag
 			uid := []byte{0x04, 0x56, 0x78, 0x9A}
-			tag := NewMIFARETag(device, uid, 0x08) // MIFARE Classic 1K SAK
+			tag := newTestMIFARETag(device, uid, 0x08) // MIFARE Classic 1K SAK
 
 			// Test WriteBlockDirect
 			err := tag.WriteBlockDirect(tt.block, tt.data)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
@@ -1739,14 +1800,113 @@ func TestMIFARETag_WriteBlockDirect(t *testing.T) {
 	}
 }
 
+func getMIFAREWriteBlockDirectTestCases() []struct {
+	setupMock     func(*MockTransport)
+	name          string
+	errorContains string
+	data          []byte
+	block         uint8
+	expectError   bool
+} {
+	return []struct {
+		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
+		data          []byte
+		block         uint8
+		expectError   bool
+	}{
+		{
+			name: "Successful_Direct_Write_via_Fallback",
+			setupMock: func(mt *MockTransport) {
+				// Simulate read timeout to trigger SendRawCommand fallback
+				mt.SetError(0x40, errors.New("data exchange error: 01"))
+
+				// Setup response for readBlockCommunicateThru fallback (SendRawCommand)
+				readData := make([]byte, 18)
+				readData[0] = 0x43 // InCommunicateThru response
+				readData[1] = 0x00 // Success status
+				for i := 2; i < 18; i++ {
+					readData[i] = byte(i - 2)
+				}
+				mt.SetResponse(0x42, readData) // SendRawCommand for read validation
+
+				// Note: The write will also fail with timeout error and use writeBlockDirectAlternative
+				// which eventually calls writeBlockCommunicateThru via SendRawCommand
+				// This tests the full fallback chain for clone tags
+			},
+			block: 4,
+			data: []byte{
+				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+			},
+		},
+		{
+			name: "Successful_Direct_Write_Normal_Path",
+			setupMock: func(mt *MockTransport) {
+				// For read validation (first call to SendDataExchange)
+				readData := make([]byte, 18)
+				readData[0] = 0x41 // InDataExchange response
+				readData[1] = 0x00 // Success status
+				for i := 2; i < 18; i++ {
+					readData[i] = byte(i - 2)
+				}
+				mt.SetResponse(0x40, readData)
+
+				// The write will also use SendDataExchange but MockTransport
+				// will return the same response (which is fine for success case)
+			},
+			block: 4,
+			data: []byte{
+				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+			},
+		},
+		{
+			name: "Invalid_Block_Size",
+			setupMock: func(_ *MockTransport) {
+				// No setup needed - validation happens before transport call
+			},
+			block:         4,
+			data:          []byte{0x01, 0x02, 0x03}, // Too short
+			expectError:   true,
+			errorContains: "invalid block size",
+		},
+		{
+			name: "Manufacturer_Block_Protection",
+			setupMock: func(_ *MockTransport) {
+				// No setup needed - validation happens before transport call
+			},
+			block: 0, // Manufacturer block
+			data: []byte{
+				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+			},
+			expectError:   true,
+			errorContains: "cannot write to manufacturer block",
+		},
+		{
+			name: "Read_Validation_Failure",
+			setupMock: func(mt *MockTransport) {
+				// Set error for both SendDataExchange and SendRawCommand
+				mt.SetError(0x40, errors.New("data exchange error: 14"))
+				mt.SetError(0x42, errors.New("raw read command failed"))
+			},
+			block: 4,
+			data: []byte{
+				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+			},
+			expectError:   true,
+			errorContains: "clone tag does not support direct block access",
+		},
+	}
+}
+
 func TestMIFARETag_ReadNDEF(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Authentication_Failure",
@@ -1763,7 +1923,7 @@ func TestMIFARETag_ReadNDEF(t *testing.T) {
 				// Setup authentication success
 				authData := []byte{0x41, 0x00}
 				mt.SetResponse(0x40, authData)
-				
+
 				// Setup empty response for reads - this will trigger TLV parsing error
 				emptyResponse := make([]byte, 18)
 				emptyResponse[0] = 0x41
@@ -1780,7 +1940,7 @@ func TestMIFARETag_ReadNDEF(t *testing.T) {
 				// Setup authentication success first
 				authData := []byte{0x41, 0x00}
 				mt.SetResponse(0x40, authData)
-				
+
 				// Then setup error for subsequent read operations
 				mt.SetError(0x40, errors.New("communication error"))
 			},
@@ -1801,38 +1961,68 @@ func TestMIFARETag_ReadNDEF(t *testing.T) {
 
 			// Create MIFARE tag
 			uid := []byte{0x04, 0x56, 0x78, 0x9A}
-			tag := NewMIFARETag(device, uid, 0x08)
+			tag := newTestMIFARETag(device, uid, 0x08)
 
 			// Test ReadNDEF
 			message, err := tag.ReadNDEF()
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
 				assert.Nil(t, message)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, message)
 			}
 		})
 	}
 }
 
-func TestMIFARETag_WriteNDEF(t *testing.T) {
-	t.Parallel()
+// Helper function for MIFARE tag error testing
+// Helper function for MIFARE tag setup and error checking
+func setupMIFARETagTest(t *testing.T, setupMock func(*MockTransport)) (*MIFARETag, *MockTransport) {
+	t.Helper()
+	mt := NewMockTransport()
+	setupMock(mt)
+	device := &Device{transport: mt}
+	uid := []byte{0x04, 0x56, 0x78, 0x9A}
+	tag := newTestMIFARETag(device, uid, 0x08)
+	return tag, mt
+}
 
-	tests := []struct {
-		name          string
+// Helper function for MIFARE tag error checking
+func checkMIFARETagError(t *testing.T, err error, expectError bool, errorContains string) {
+	t.Helper()
+	switch expectError {
+	case true:
+		require.Error(t, err)
+		if errorContains != "" {
+			assert.Contains(t, err.Error(), errorContains)
+		}
+	case false:
+		assert.NoError(t, err)
+	}
+}
+
+func getMIFAREWriteNDEFTestCases() []struct {
+	setupMock     func(*MockTransport)
+	message       *NDEFMessage
+	name          string
+	errorContains string
+	expectError   bool
+} {
+	return []struct {
 		setupMock     func(*MockTransport)
 		message       *NDEFMessage
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Empty_Message",
-			setupMock: func(mt *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// No setup needed - validation happens before transport call
 			},
 			message: &NDEFMessage{
@@ -1844,7 +2034,6 @@ func TestMIFARETag_WriteNDEF(t *testing.T) {
 		{
 			name: "Authentication_Failure",
 			setupMock: func(mt *MockTransport) {
-				// Setup authentication failure
 				mt.SetError(0x40, errors.New("authentication failed"))
 			},
 			message: &NDEFMessage{
@@ -1861,7 +2050,6 @@ func TestMIFARETag_WriteNDEF(t *testing.T) {
 		{
 			name: "Message_Too_Large",
 			setupMock: func(mt *MockTransport) {
-				// Setup authentication success
 				authData := []byte{0x41, 0x00}
 				mt.SetResponse(0x40, authData)
 			},
@@ -1869,7 +2057,7 @@ func TestMIFARETag_WriteNDEF(t *testing.T) {
 				Records: []NDEFRecord{
 					{
 						Type: NDEFTypeText,
-						Text: string(make([]byte, 2000)), // Very large text
+						Text: string(make([]byte, 2000)),
 					},
 				},
 			},
@@ -1879,11 +2067,8 @@ func TestMIFARETag_WriteNDEF(t *testing.T) {
 		{
 			name: "Valid_Small_Message",
 			setupMock: func(mt *MockTransport) {
-				// Setup authentication success (for sector authentication)
 				authData := []byte{0x41, 0x00}
 				mt.SetResponse(0x40, authData)
-				
-				// Setup successful write responses
 				writeData := []byte{0x41, 0x00}
 				mt.SetResponse(0x40, writeData)
 			},
@@ -1891,39 +2076,29 @@ func TestMIFARETag_WriteNDEF(t *testing.T) {
 				Records: []NDEFRecord{
 					{
 						Type: NDEFTypeText,
-						Text: "Hi", // Small text to avoid complexity
+						Text: "Hi",
 					},
 				},
 			},
 			expectError: false,
 		},
 	}
+}
+
+func TestMIFARETag_WriteNDEF(t *testing.T) {
+	t.Parallel()
+
+	tests := getMIFAREWriteNDEFTestCases()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create mock transport and device
-			mt := NewMockTransport()
-			tt.setupMock(mt)
-
-			device := &Device{transport: mt}
-
-			// Create MIFARE tag
-			uid := []byte{0x04, 0x56, 0x78, 0x9A}
-			tag := NewMIFARETag(device, uid, 0x08)
+			tag, _ := setupMIFARETagTest(t, tt.setupMock)
 
 			// Test WriteNDEF
 			err := tag.WriteNDEF(tt.message)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			checkMIFARETagError(t, err, tt.expectError, tt.errorContains)
 		})
 	}
 }
@@ -1932,10 +2107,10 @@ func TestMIFARETag_ResetAuthState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
-		expectError   bool
+		name          string
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Successful_Reset",
@@ -1968,7 +2143,7 @@ func TestMIFARETag_ResetAuthState(t *testing.T) {
 
 			// Create MIFARE tag and set some auth state
 			uid := []byte{0x04, 0x56, 0x78, 0x9A}
-			tag := NewMIFARETag(device, uid, 0x08)
+			tag := newTestMIFARETag(device, uid, 0x08)
 
 			// Simulate previous auth state
 			tag.lastAuthSector = 5
@@ -1978,12 +2153,12 @@ func TestMIFARETag_ResetAuthState(t *testing.T) {
 			err := tag.ResetAuthState()
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				// Verify auth state was cleared
 				assert.Equal(t, -1, tag.lastAuthSector)
 				assert.Equal(t, byte(0), tag.lastAuthKeyType)
@@ -1996,11 +2171,11 @@ func TestMIFARETag_WriteText(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
 		setupMock     func(*MockTransport)
+		name          string
 		text          string
-		expectError   bool
 		errorContains string
+		expectError   bool
 	}{
 		{
 			name: "Successful_Text_Write",
@@ -2034,27 +2209,11 @@ func TestMIFARETag_WriteText(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create mock transport and device
-			mt := NewMockTransport()
-			tt.setupMock(mt)
-
-			device := &Device{transport: mt}
-
-			// Create MIFARE tag
-			uid := []byte{0x04, 0x56, 0x78, 0x9A}
-			tag := NewMIFARETag(device, uid, 0x08)
+			tag, _ := setupMIFARETagTest(t, tt.setupMock)
 
 			// Test WriteText
 			err := tag.WriteText(tt.text)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			checkMIFARETagError(t, err, tt.expectError, tt.errorContains)
 		})
 	}
 }

@@ -1,3 +1,23 @@
+// go-pn532
+// Copyright (c) 2025 The Zaparoo Project Contributors.
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// This file is part of go-pn532.
+//
+// go-pn532 is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// go-pn532 is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with go-pn532; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 package pn532
 
 import (
@@ -15,10 +35,10 @@ func TestNew(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
 		transport Transport
-		wantErr   bool
+		name      string
 		errMsg    string
+		wantErr   bool
 	}{
 		{
 			name:      "Valid_MockTransport",
@@ -39,13 +59,13 @@ func TestNew(t *testing.T) {
 			device, err := New(tt.transport)
 
 			if tt.wantErr {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errMsg != "" {
 					assert.Contains(t, err.Error(), tt.errMsg)
 				}
 				assert.Nil(t, device)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, device)
 				if tt.transport != nil {
 					assert.Equal(t, tt.transport, device.Transport())
@@ -59,10 +79,10 @@ func TestDevice_InitContext(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
 		setupMock      func(*MockTransport)
-		expectError    bool
+		name           string
 		errorSubstring string
+		expectError    bool
 	}{
 		{
 			name: "Successful_Initialization",
@@ -111,12 +131,12 @@ func TestDevice_InitContext(t *testing.T) {
 			err = device.InitContext(ctx)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorSubstring != "" {
 					assert.Contains(t, err.Error(), tt.errorSubstring)
 				}
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				// Verify that firmware version is called twice (validation + setup)
 				assert.Equal(t, 2, mock.GetCallCount(testutil.CmdGetFirmwareVersion))
 				assert.Equal(t, 1, mock.GetCallCount(testutil.CmdSAMConfiguration))
@@ -141,14 +161,14 @@ func TestDevice_InitContext_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	err = device.InitContext(ctx)
+	_ = device.InitContext(ctx)
 	// Note: This test depends on the actual implementation being context-aware
 	// For now, we just verify the setup works with longer timeout
-	
+
 	// Retry with sufficient timeout to verify mock works
 	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
 	defer cancel2()
-	
+
 	err = device.InitContext(ctx2)
 	assert.NoError(t, err)
 }
@@ -157,10 +177,10 @@ func TestDevice_DetectTagsContext(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
 		setupMock   func(*MockTransport)
-		maxTargets  byte
+		name        string
 		wantTags    int
+		maxTargets  byte
 		expectError bool
 	}{
 		{
@@ -168,7 +188,8 @@ func TestDevice_DetectTagsContext(t *testing.T) {
 			setupMock: func(mock *MockTransport) {
 				mock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
 				mock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
-				mock.SetResponse(testutil.CmdInListPassiveTarget, testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
+				mock.SetResponse(testutil.CmdInListPassiveTarget,
+					testutil.BuildTagDetectionResponse("NTAG213", testutil.TestNTAG213UID))
 			},
 			maxTargets: 1,
 			wantTags:   1,
@@ -217,9 +238,9 @@ func TestDevice_DetectTagsContext(t *testing.T) {
 			tags, err := device.DetectTagsContext(ctx, tt.maxTargets, 0)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Len(t, tags, tt.wantTags)
 
 				if tt.wantTags > 0 {
@@ -236,10 +257,10 @@ func TestDevice_GetFirmwareVersionContext(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
 		setupMock      func(*MockTransport)
-		expectError    bool
+		name           string
 		errorSubstring string
+		expectError    bool
 	}{
 		{
 			name: "Successful_Firmware_Version",
@@ -285,12 +306,12 @@ func TestDevice_GetFirmwareVersionContext(t *testing.T) {
 			firmware, err := device.GetFirmwareVersionContext(ctx)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 				if tt.errorSubstring != "" {
 					assert.Contains(t, err.Error(), tt.errorSubstring)
 				}
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, firmware)
 				assert.Equal(t, 1, mock.GetCallCount(testutil.CmdGetFirmwareVersion))
 			}
@@ -320,12 +341,12 @@ func TestDevice_SetRetryConfig(t *testing.T) {
 
 	// Test setting retry config
 	config := &RetryConfig{
-		MaxAttempts:      5,
-		InitialBackoff:   100 * time.Millisecond,
-		MaxBackoff:       2 * time.Second,
+		MaxAttempts:       5,
+		InitialBackoff:    100 * time.Millisecond,
+		MaxBackoff:        2 * time.Second,
 		BackoffMultiplier: 2.0,
-		Jitter:           0.1,
-		RetryTimeout:     10 * time.Second,
+		Jitter:            0.1,
+		RetryTimeout:      10 * time.Second,
 	}
 
 	device.SetRetryConfig(config)
@@ -336,13 +357,13 @@ func TestDevice_Close(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
 		setupMock   func(*MockTransport)
+		name        string
 		expectError bool
 	}{
 		{
 			name: "Successful_Close",
-			setupMock: func(mock *MockTransport) {
+			setupMock: func(_ *MockTransport) {
 				// Mock is connected by default
 			},
 			expectError: false,
@@ -361,9 +382,9 @@ func TestDevice_Close(t *testing.T) {
 
 			err = device.Close()
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.False(t, mock.IsConnected())
 			}
 		})
