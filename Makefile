@@ -1,4 +1,4 @@
-.PHONY: all build test lint lint-fix clean coverage check help nfctest readtag tdd
+.PHONY: all build test test-unit test-integration lint lint-fix clean coverage coverage-unit coverage-integration check help nfctest readtag tdd
 
 # Go parameters
 GOCMD=go
@@ -23,16 +23,35 @@ readtag:
 	@echo "Building readtag..."
 	$(GOBUILD) -o cmd/readtag/readtag ./cmd/readtag
 
-# Run tests
-test:
-	@echo "Running tests..."
-	$(GOTEST) -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+# Run all tests (unit + integration)
+test: test-unit test-integration
+	@echo "All tests completed!"
 
-# Run tests with coverage report
-coverage: test
-	@echo "Generating coverage report..."
-	$(GOCMD) tool cover -html=coverage.txt -o coverage.html
-	@echo "Coverage report generated at coverage.html"
+# Run unit tests only
+test-unit:
+	@echo "Running unit tests..."
+	$(GOTEST) -v -race -coverprofile=coverage-unit.txt -covermode=atomic ./...
+
+# Run integration tests only
+test-integration:
+	@echo "Running integration tests..."
+	$(GOTEST) -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic ./...
+
+# Run unit tests with coverage report
+coverage-unit: test-unit
+	@echo "Generating unit test coverage report..."
+	$(GOCMD) tool cover -html=coverage-unit.txt -o coverage-unit.html
+	@echo "Unit test coverage report generated at coverage-unit.html"
+
+# Run integration tests with coverage report
+coverage-integration: test-integration
+	@echo "Generating integration test coverage report..."
+	$(GOCMD) tool cover -html=coverage-integration.txt -o coverage-integration.html
+	@echo "Integration test coverage report generated at coverage-integration.html"
+
+# Run both coverage reports
+coverage: coverage-unit coverage-integration
+	@echo "All coverage reports generated!"
 
 # Run linters (includes formatting)
 lint:
@@ -50,7 +69,7 @@ lint-fix:
 clean:
 	@echo "Cleaning..."
 	$(GOCMD) clean
-	rm -f coverage.txt coverage.html
+	rm -f coverage*.txt coverage*.html
 	rm -rf bin/ dist/ build/
 	rm -f cmd/nfctest/nfctest cmd/readtag/readtag
 
@@ -67,14 +86,18 @@ help:
 	@echo "================="
 	@echo ""
 	@echo "Available targets:"
-	@echo "  all            - Lint, test, and build (default)"
-	@echo "  build          - Build all packages"
-	@echo "  nfctest        - Build nfctest binary to cmd/nfctest/"
-	@echo "  readtag        - Build readtag binary to cmd/readtag/"
-	@echo "  test           - Run tests with race detector and coverage"
-	@echo "  coverage       - Generate HTML coverage report"
-	@echo "  lint           - Format code and run linters (golangci-lint)"
-	@echo "  lint-fix       - Run linters with auto-fix (golangci-lint --fix)"
-	@echo "  clean          - Remove build artifacts"
-	@echo "  check          - Run lint and test (pre-commit check)"
-	@echo "  help           - Show this help message"
+	@echo "  all                 - Lint, test, and build (default)"
+	@echo "  build               - Build all packages"
+	@echo "  nfctest             - Build nfctest binary to cmd/nfctest/"
+	@echo "  readtag             - Build readtag binary to cmd/readtag/"
+	@echo "  test                - Run all tests (unit + integration)"
+	@echo "  test-unit           - Run unit tests only"
+	@echo "  test-integration    - Run integration tests only"
+	@echo "  coverage            - Generate all HTML coverage reports"
+	@echo "  coverage-unit       - Generate unit test coverage report"
+	@echo "  coverage-integration - Generate integration test coverage report"
+	@echo "  lint                - Format code and run linters (golangci-lint)"
+	@echo "  lint-fix            - Run linters with auto-fix (golangci-lint --fix)"
+	@echo "  clean               - Remove build artifacts and coverage files"
+	@echo "  check               - Run lint and test (pre-commit check)"
+	@echo "  help                - Show this help message"

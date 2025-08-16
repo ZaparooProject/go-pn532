@@ -22,6 +22,7 @@ package pn532
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -152,4 +153,109 @@ func (t *TransportWithRetry) HasCapability(capability TransportCapability) bool 
 // SetRetryConfig updates the retry configuration
 func (t *TransportWithRetry) SetRetryConfig(config *RetryConfig) {
 	t.config = config
+}
+
+// MockTransport provides a mock implementation of Transport for testing
+type MockTransport struct {
+	connected bool
+	timeout   time.Duration
+	responses map[byte][]byte // Map command to response
+	callCount map[byte]int    // Track how many times each command was called
+	delay     time.Duration   // Simulate hardware delay
+	errorMap  map[byte]error  // Inject errors for specific commands
+}
+
+// NewMockTransport creates a new mock transport
+func NewMockTransport() *MockTransport {
+	return &MockTransport{
+		connected: true,
+		timeout:   time.Second,
+		responses: make(map[byte][]byte),
+		callCount: make(map[byte]int),
+		delay:     0,
+		errorMap:  make(map[byte]error),
+	}
+}
+
+// SendCommand implements Transport interface
+func (m *MockTransport) SendCommand(cmd byte, args []byte) ([]byte, error) {
+	if !m.connected {
+		return nil, errors.New("transport not connected")
+	}
+
+	// Track call count
+	m.callCount[cmd]++
+
+	// Simulate hardware delay if configured
+	if m.delay > 0 {
+		time.Sleep(m.delay)
+	}
+
+	// Check for injected error
+	if err, exists := m.errorMap[cmd]; exists {
+		return nil, err
+	}
+
+	// Return configured response
+	if response, exists := m.responses[cmd]; exists {
+		return response, nil
+	}
+
+	// Default response for unknown commands
+	return []byte{0xD5, cmd + 1, 0x00}, nil // Basic ACK response
+}
+
+// Close implements Transport interface
+func (m *MockTransport) Close() error {
+	m.connected = false
+	return nil
+}
+
+// SetTimeout implements Transport interface
+func (m *MockTransport) SetTimeout(timeout time.Duration) error {
+	m.timeout = timeout
+	return nil
+}
+
+// IsConnected implements Transport interface
+func (m *MockTransport) IsConnected() bool {
+	return m.connected
+}
+
+// Type implements Transport interface
+func (m *MockTransport) Type() TransportType {
+	return TransportMock
+}
+
+// Test helper methods
+
+// SetResponse configures a response for a specific command
+func (m *MockTransport) SetResponse(cmd byte, response []byte) {
+	m.responses[cmd] = response
+}
+
+// SetError configures an error to be returned for a specific command
+func (m *MockTransport) SetError(cmd byte, err error) {
+	m.errorMap[cmd] = err
+}
+
+// ClearError removes error injection for a command
+func (m *MockTransport) ClearError(cmd byte) {
+	delete(m.errorMap, cmd)
+}
+
+// SetDelay configures a delay to simulate hardware response time
+func (m *MockTransport) SetDelay(delay time.Duration) {
+	m.delay = delay
+}
+
+// GetCallCount returns how many times a command was called
+func (m *MockTransport) GetCallCount(cmd byte) int {
+	return m.callCount[cmd]
+}
+
+// Reset clears all call counts and resets state
+func (m *MockTransport) Reset() {
+	m.callCount = make(map[byte]int)
+	m.connected = true
 }

@@ -9,8 +9,8 @@
 *.out
 coverage.txt
 coverage.html
-coverage_*.txt
-coverage_*.out
+coverage*.txt
+coverage*.out
 *.coverage
 *.prof
 
@@ -36,7 +36,7 @@ Thumbs.db
 /bin/
 
 cmd/*/readtag
-cmd/*/pn532record
+cmd/*/nfctest
 cmd/*/*
 !cmd/*/*.go
 !cmd/*/*.md
