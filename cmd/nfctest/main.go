@@ -49,6 +49,8 @@ func run() int {
 	detectTimeoutFlag := flag.Duration("detect-timeout", 30*time.Second, "Card/tag detection timeout")
 	pollIntervalFlag := flag.Duration("poll-interval", 50*time.Millisecond,
 		"Polling interval for tag detection (default: 50ms)")
+	cardRemovalTimeoutFlag := flag.Duration("card-removal-timeout", 300*time.Millisecond,
+		"Time to wait before considering a card removed when no successful reads occur (default: 300ms)")
 	verboseFlag := flag.Bool("verbose", false, "Enable verbose output")
 
 	flag.Parse()
@@ -69,6 +71,7 @@ func run() int {
 	config.ConnectTimeout = *connectTimeoutFlag
 	config.DetectTimeout = *detectTimeoutFlag
 	config.PollInterval = *pollIntervalFlag
+	config.CardRemovalTimeout = *cardRemovalTimeoutFlag
 	config.Verbose = *verboseFlag
 
 	// Setup signal handling for graceful shutdown

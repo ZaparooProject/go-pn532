@@ -45,21 +45,23 @@ const (
 
 // Config holds application configuration
 type Config struct {
-	Mode           Mode
-	ConnectTimeout time.Duration
-	DetectTimeout  time.Duration
-	PollInterval   time.Duration
-	Verbose        bool
+	Mode               Mode
+	ConnectTimeout     time.Duration
+	DetectTimeout      time.Duration
+	PollInterval       time.Duration
+	CardRemovalTimeout time.Duration
+	Verbose            bool
 }
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Mode:           ModeComprehensive,
-		ConnectTimeout: 10 * time.Second,
-		DetectTimeout:  30 * time.Second,
-		PollInterval:   50 * time.Millisecond,
-		Verbose:        false,
+		Mode:               ModeComprehensive,
+		ConnectTimeout:     10 * time.Second,
+		DetectTimeout:      30 * time.Second,
+		PollInterval:       50 * time.Millisecond,
+		CardRemovalTimeout: 300 * time.Millisecond,
+		Verbose:            false,
 	}
 }
 
@@ -68,12 +70,26 @@ type TestMode struct {
 	Quick bool
 }
 
+// CardDetectionState represents the finite state machine for card detection
+type CardDetectionState int
+
+const (
+	StateIdle CardDetectionState = iota
+	StateTagDetected
+	StateReading
+	StatePostReadGrace
+)
+
 // CardState tracks the state of a card on a reader
 type CardState struct {
-	LastUID   string
-	LastType  string
-	TestedUID string
-	Present   bool
+	LastUID           string
+	LastType          string
+	TestedUID         string
+	Present           bool
+	LastSeenTime      time.Time
+	RemovalTimer      *time.Timer
+	DetectionState    CardDetectionState
+	ReadStartTime     time.Time
 }
 
 // MonitoringSetup holds monitoring configuration
@@ -85,3 +101,53 @@ type MonitoringSetup struct {
 
 // ErrNoTagInPoll indicates no tag was detected during polling (not an error condition)
 var ErrNoTagInPoll = errors.New("no tag detected in polling cycle")
+
+// TransitionToReading moves to reading state and suspends removal timer
+func (cs *CardState) TransitionToReading() {
+	cs.DetectionState = StateReading
+	cs.ReadStartTime = time.Now()
+	if cs.RemovalTimer != nil {
+		cs.RemovalTimer.Stop()
+		cs.RemovalTimer = nil
+	}
+}
+
+// TransitionToPostReadGrace moves to post-read grace period with short timeout
+func (cs *CardState) TransitionToPostReadGrace(timeout time.Duration, callback func()) {
+	cs.DetectionState = StatePostReadGrace
+	if cs.RemovalTimer != nil {
+		cs.RemovalTimer.Stop()
+	}
+	// Short grace period after read completion
+	cs.RemovalTimer = time.AfterFunc(timeout/2, callback)
+}
+
+// TransitionToDetected moves to tag detected state with normal removal timeout
+func (cs *CardState) TransitionToDetected(timeout time.Duration, callback func()) {
+	cs.DetectionState = StateTagDetected
+	cs.LastSeenTime = time.Now()
+	if cs.RemovalTimer != nil {
+		cs.RemovalTimer.Stop()
+	}
+	cs.RemovalTimer = time.AfterFunc(timeout, callback)
+}
+
+// TransitionToIdle resets to idle state
+func (cs *CardState) TransitionToIdle() {
+	cs.DetectionState = StateIdle
+	cs.Present = false
+	cs.LastUID = ""
+	cs.LastType = ""
+	cs.TestedUID = ""
+	cs.LastSeenTime = time.Time{}
+	cs.ReadStartTime = time.Time{}
+	if cs.RemovalTimer != nil {
+		cs.RemovalTimer.Stop()
+		cs.RemovalTimer = nil
+	}
+}
+
+// CanStartRemovalTimer returns true if the state allows removal timer to run
+func (cs *CardState) CanStartRemovalTimer() bool {
+	return cs.DetectionState == StateTagDetected || cs.DetectionState == StatePostReadGrace
+}

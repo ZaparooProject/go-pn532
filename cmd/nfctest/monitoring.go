@@ -152,8 +152,8 @@ func (m *Monitoring) continuousPolling(
 		detectedTag, err := m.performSinglePoll(ctx, device)
 		if err != nil {
 			if errors.Is(err, ErrNoTagInPoll) {
-				// No tag detected - pass nil to processPollingResults to handle card removal
-				m.processPollingResults(device, nil, state, readerPath, isQuick)
+				// No tag detected - timer will handle removal detection
+				// No need to call processPollingResults with nil
 			} else {
 				m.handlePollingError(err, state, readerPath)
 			}
@@ -196,10 +196,10 @@ func (m *Monitoring) performSinglePoll(ctx context.Context, device *pn532.Device
 	return tags[0], nil
 }
 
-// handlePollingError handles errors from InAutoPoll operations
+// handlePollingError handles errors from polling operations
 func (m *Monitoring) handlePollingError(err error, state *CardState, readerPath string) {
 	if errors.Is(err, context.DeadlineExceeded) {
-		m.handleCardRemoval(state, readerPath)
+		// Timeout is normal - timer will handle removal detection
 		return
 	}
 
@@ -207,7 +207,9 @@ func (m *Monitoring) handlePollingError(err error, state *CardState, readerPath 
 		return
 	}
 
-	// For other device errors, also handle card removal
+	// For serious device errors, trigger immediate card removal
+	// This handles cases like device disconnection
+	m.output.Warning("Polling error on %s: %v", readerPath, err)
 	m.handleCardRemoval(state, readerPath)
 }
 
@@ -221,10 +223,7 @@ func (m *Monitoring) handleCardRemoval(state *CardState, readerPath string) {
 
 // resetCardState resets the card state to empty
 func (*Monitoring) resetCardState(state *CardState) {
-	state.Present = false
-	state.LastUID = ""
-	state.LastType = ""
-	state.TestedUID = ""
+	state.TransitionToIdle()
 }
 
 // processPollingResults processes the detected tag
@@ -232,14 +231,25 @@ func (m *Monitoring) processPollingResults(
 	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string, isQuick bool,
 ) {
 	if detectedTag == nil {
-		m.handleCardRemoval(state, readerPath)
+		// No tag detected - only handle removal if we're in a state that allows it
+		if state.CanStartRemovalTimer() && state.DetectionState != StateReading {
+			// Timer should handle removal, but this is a safety check
+		}
 		return
 	}
 
+	// Card present - handle state transitions
 	cardChanged := m.updateCardState(state, detectedTag, readerPath)
+	
+	// Transition to detected state with removal timer (unless we're currently reading)
+	if state.DetectionState != StateReading {
+		state.TransitionToDetected(m.config.CardRemovalTimeout, func() {
+			m.handleCardRemoval(state, readerPath)
+		})
+	}
 
 	if cardChanged || m.shouldTestCard(state, detectedTag.UID) {
-		m.testAndRecordCard(device, detectedTag, state, isQuick)
+		m.testAndRecordCard(device, detectedTag, state, readerPath, isQuick)
 	}
 }
 
@@ -275,14 +285,22 @@ func (*Monitoring) shouldTestCard(state *CardState, currentUID string) bool {
 
 // testAndRecordCard tests the card and records the result
 func (m *Monitoring) testAndRecordCard(
-	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, isQuick bool,
+	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string, isQuick bool,
 ) {
+	// Transition to reading state to prevent removal timer from firing during long reads
+	state.TransitionToReading()
+	
 	if err := m.testing.TestCard(device, detectedTag, TestMode{Quick: isQuick}); err != nil {
 		m.output.Error("Card test failed: %v", err)
 	} else {
 		m.output.OK("Card test completed")
 	}
 	state.TestedUID = detectedTag.UID
+	
+	// Transition to post-read grace period with shorter timeout
+	state.TransitionToPostReadGrace(m.config.CardRemovalTimeout, func() {
+		m.handleCardRemoval(state, readerPath)
+	})
 }
 
 // CheckCardsQuick performs a quick check for cards on all readers
