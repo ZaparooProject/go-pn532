@@ -1,4 +1,4 @@
-.PHONY: all build test lint lint-fix clean coverage check help nfctest readtag
+.PHONY: all build test lint lint-fix clean coverage check help nfctest readtag tdd
 
 # Go parameters
 GOCMD=go
@@ -57,6 +57,9 @@ clean:
 # Quick check before committing
 check: lint test
 	@echo "All checks passed!"
+
+tdd:
+	go test -json ./... 2>&1 | tdd-guard-go -project-root $(CURDIR)
 
 # Show help
 help:

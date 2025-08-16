@@ -31,7 +31,6 @@ import (
 
 	pn532 "github.com/ZaparooProject/go-pn532"
 	"github.com/ZaparooProject/go-pn532/detection"
-
 	// Import all detectors to register them
 	_ "github.com/ZaparooProject/go-pn532/detection/i2c"
 	_ "github.com/ZaparooProject/go-pn532/detection/spi"
@@ -70,7 +69,6 @@ type config struct {
 	timeout      *time.Duration
 	writeText    *string
 	debug        *bool
-	validate     *bool
 	testRobust   *bool
 	testTiming   *bool
 	pollInterval *time.Duration
@@ -83,7 +81,6 @@ func parseFlags() *config {
 		timeout:    flag.Duration("timeout", 30*time.Second, "Timeout for tag detection (default: 30s)"),
 		writeText:  flag.String("write", "", "Text to write to the tag (if not specified, will only read)"),
 		debug:      flag.Bool("debug", false, "Enable debug output"),
-		validate:   flag.Bool("validate", true, "Enable read/write validation (default: true)"),
 		testRobust: flag.Bool("test-robust", false, "Test robust authentication features for Chinese clone cards"),
 		testTiming: flag.Bool("test-timing", false, "Test timing variance analysis"),
 		pollInterval: flag.Duration("poll-interval", 100*time.Millisecond,
@@ -172,11 +169,6 @@ func buildConnectOptions(cfg *config) []pn532.ConnectOption {
 		_, _ = fmt.Printf("Opening device: %s\n", *cfg.devicePath)
 	}
 
-	if *cfg.validate {
-		connectOpts = append(connectOpts, pn532.WithValidation(nil))
-		_, _ = fmt.Println("Validation enabled")
-	}
-
 	// Set device timeout to prevent InListPassiveTarget from blocking indefinitely
 	connectOpts = append(connectOpts, pn532.WithConnectTimeout(*cfg.timeout))
 	return connectOpts
@@ -213,7 +205,7 @@ func waitForAndCreateTag(device *pn532.Device, timeout, pollInterval time.Durati
 
 	// Handle case where no tag was detected (SimplePoll returns nil, nil)
 	if detectedTag == nil {
-		return nil, fmt.Errorf("no tag detected")
+		return nil, errors.New("no tag detected")
 	}
 
 	tag, err := device.CreateTag(detectedTag)
@@ -537,7 +529,7 @@ func main() {
 	_, _ = fmt.Print(tag.DebugInfo())
 
 	// Exit successfully after reading and displaying the tag
-	os.Exit(0)
+	// Use return instead of os.Exit(0) to allow defer functions to run
 }
 
 /*
@@ -616,13 +608,13 @@ func (d *Device) SimplePoll(ctx context.Context, interval time.Duration) (*Targe
     if err := d.transport.SetTimeout(interval); err != nil {
         return nil, err
     }
-    
+
     // Simple direct call - no complex retry logic needed
     targets, err := d.transport.InListPassiveTarget(1, 0x00)
     if err != nil {
         return nil, err
     }
-    
+
     if len(targets) > 0 {
         return &targets[0], nil
     }

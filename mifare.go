@@ -22,6 +22,7 @@ package pn532
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -733,7 +734,7 @@ func (t *MIFARETag) ResetAuthState() error {
 
 	// Force PN532 to reset by attempting to re-detect the tag
 	// This clears any internal authentication state in the PN532 chip
-	_, err := t.device.DetectTag()
+	_, err := t.device.InListPassiveTargetContext(context.Background(), 1, 0x00)
 	return err
 }
 
@@ -868,7 +869,7 @@ func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
 
 	case retryModerate:
 		// Moderate: Card reinitialization (critical fix from research)
-		_, err := t.device.DetectTag()
+		_, err := t.device.InListPassiveTargetContext(context.Background(), 1, 0x00)
 		if err != nil {
 			return fmt.Errorf("card reinitialization failed: %w", err)
 		}
@@ -886,7 +887,7 @@ func (t *MIFARETag) applyRetryStrategy(level retryLevel, _ error) error {
 		// Note: This would require device-level support for field control
 		// For now, we do a longer reinitialization sequence
 		for i := 0; i < 3; i++ {
-			_, err := t.device.DetectTag()
+			_, err := t.device.InListPassiveTargetContext(context.Background(), 1, 0x00)
 			if err == nil {
 				break
 			}

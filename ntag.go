@@ -279,7 +279,7 @@ func (t *NTAGTag) readNDEFDataWithFastRead(_ *ndefHeader, totalBytes int) ([]byt
 		return t.performSingleFastRead(readRange.startPage, readRange.endPage)
 	}
 
-	debugf("NTAG using multiple FastReads for pages %d-%d (max %d pages per read)", 
+	debugf("NTAG using multiple FastReads for pages %d-%d (max %d pages per read)",
 		readRange.startPage, readRange.endPage, maxPagesPerRead)
 	return t.performMultipleFastReads(readRange.startPage, readRange.endPage, maxPagesPerRead)
 }
@@ -366,7 +366,7 @@ func (t *NTAGTag) markFastReadAsUnsupported() {
 // readNDEFBlockByBlock is the fallback method using block-by-block reads
 func (t *NTAGTag) readNDEFBlockByBlock() (*NDEFMessage, error) {
 	debugf("NTAG reading NDEF data using block-by-block method (FastRead unavailable)")
-	
+
 	// Read user memory blocks starting from block 4
 	data := make([]byte, 0, ntagMaxBlocks*ntagBlockSize)
 	emptyBlocks := 0

@@ -22,8 +22,6 @@ package pn532
 
 import (
 	"context"
-	"fmt"
-	"time"
 )
 
 // SendDataExchange sends a data exchange command to the selected tag
@@ -35,39 +33,6 @@ func (d *Device) SendDataExchange(data []byte) ([]byte, error) {
 // This is used for commands that don't work with InDataExchange (like GET_VERSION)
 func (d *Device) SendRawCommand(data []byte) ([]byte, error) {
 	return d.SendRawCommandContext(context.Background(), data)
-}
-
-// PollForTag continuously polls for a tag until one is detected or context is cancelled
-// Returns nil, nil if context is cancelled before a tag is detected
-func (d *Device) PollForTag(ctx context.Context, pollInterval time.Duration) (*DetectedTag, error) {
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	var lastErrorLog time.Time
-	const errorLogInterval = 10 * time.Second // Only log errors every 10 seconds
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled while waiting for tag: %w", ctx.Err())
-		case <-ticker.C:
-			tag, err := d.DetectTag()
-			if err != nil {
-				d.logPollingError(&lastErrorLog, errorLogInterval)
-				continue
-			}
-			if tag != nil {
-				return tag, nil
-			}
-		}
-	}
-}
-
-// logPollingError logs polling errors with rate limiting
-func (*Device) logPollingError(lastErrorLog *time.Time, errorLogInterval time.Duration) {
-	if time.Since(*lastErrorLog) >= errorLogInterval {
-		*lastErrorLog = time.Now()
-	}
 }
 
 // PowerDown puts the PN532 into power down mode to save power consumption

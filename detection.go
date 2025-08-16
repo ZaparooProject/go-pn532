@@ -131,12 +131,12 @@ func (d *Device) WaitForTag(ctx context.Context) (*DetectedTag, error) {
 func (d *Device) SimplePoll(ctx context.Context, interval time.Duration) (*DetectedTag, error) {
 	// Set transport timeout for individual polling attempts
 	if err := d.transport.SetTimeout(interval); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to set transport timeout: %w", err)
 	}
-	
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -149,7 +149,7 @@ func (d *Device) SimplePoll(ctx context.Context, interval time.Duration) (*Detec
 				debugf("Polling error (continuing): %v", err)
 				continue
 			}
-			
+
 			if len(tags) > 0 {
 				return tags[0], nil
 			}
@@ -160,7 +160,6 @@ func (d *Device) SimplePoll(ctx context.Context, interval time.Duration) (*Detec
 
 // selectDetectionStrategy chooses the appropriate detection strategy
 // Integrates with the polling strategy system for intelligent strategy selection
-
 
 // DetectTags detects multiple tags in the field
 // maxTags: maximum number of tags to detect (1-2)

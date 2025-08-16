@@ -62,11 +62,10 @@ func DefaultDeviceConfig() *DeviceConfig {
 // wrap the Device with a mutex or use separate Device instances with separate
 // transports.
 type Device struct {
-	transport            Transport
-	config               *DeviceConfig
-	firmwareVersion      *FirmwareVersion
-	currentTarget        byte
-	usePassiveTargetOnly bool
+	transport       Transport
+	config          *DeviceConfig
+	firmwareVersion *FirmwareVersion
+	currentTarget   byte
 }
 
 // setCurrentTarget sets the active target number for data exchange operations
@@ -155,28 +154,17 @@ type ConnectOption func(*connectConfig) error
 
 // connectConfig holds configuration options for device connection
 type connectConfig struct {
-	validationConfig       *ValidationConfig
 	transportFactory       TransportFactory
 	transportDeviceFactory TransportFromDeviceFactory
 	deviceOptions          []Option
 	timeout                time.Duration
 	autoDetect             bool
-	enableValidation       bool
 }
 
 // WithAutoDetection enables automatic device detection instead of using a specific path
 func WithAutoDetection() ConnectOption {
 	return func(c *connectConfig) error {
 		c.autoDetect = true
-		return nil
-	}
-}
-
-// WithValidation enables validation with the given configuration
-func WithValidation(config *ValidationConfig) ConnectOption {
-	return func(c *connectConfig) error {
-		c.enableValidation = true
-		c.validationConfig = config
 		return nil
 	}
 }
@@ -222,16 +210,12 @@ func WithTransportFromDeviceFactory(factory TransportFromDeviceFactory) ConnectO
 //	// Connect to specific device
 //	device, err := pn532.ConnectDevice("/dev/ttyUSB0")
 //
-//	// Connect with validation enabled
-//	device, err := pn532.ConnectDevice("/dev/ttyUSB0", pn532.WithValidation(nil))
 //
 //	// Auto-detect device
 //	device, err := pn532.ConnectDevice("", pn532.WithAutoDetection())
 func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 	config := &connectConfig{
 		autoDetect:             false,
-		enableValidation:       false,
-		validationConfig:       nil,
 		deviceOptions:          nil,
 		timeout:                30 * time.Second,
 		transportFactory:       nil,
@@ -273,18 +257,6 @@ func setupDevice(transport Transport, config *connectConfig) (*Device, error) {
 	return device, nil
 }
 
-func handleValidation(config *connectConfig) {
-	if !config.enableValidation {
-		return
-	}
-
-	validationConfig := config.validationConfig
-	if validationConfig == nil {
-		validationConfig = DefaultValidationConfig()
-	}
-	_ = validationConfig // Validation config prepared but not currently used
-}
-
 func ConnectDevice(path string, opts ...ConnectOption) (*Device, error) {
 	config, err := applyConnectOptions(opts)
 	if err != nil {
@@ -302,7 +274,6 @@ func ConnectDevice(path string, opts ...ConnectOption) (*Device, error) {
 		return nil, err
 	}
 
-	handleValidation(config)
 	return device, nil
 }
 
@@ -368,7 +339,6 @@ func (d *Device) SetRetryConfig(config *RetryConfig) {
 		tr.SetRetryConfig(config)
 	}
 }
-
 
 // IsAutoPollSupported returns true if the transport supports native InAutoPoll
 func (d *Device) IsAutoPollSupported() bool {
