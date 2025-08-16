@@ -7,8 +7,7 @@
 *.test
 
 *.out
-coverage.txt
-coverage.html
+coverage*.html
 coverage*.txt
 coverage*.out
 *.coverage
