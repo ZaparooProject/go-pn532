@@ -43,8 +43,6 @@ func main() {
 
 func run() int {
 	// Parse command line flags
-	quick := flag.Bool("quick", false, "Quick mode - lighter, faster testing")
-	vendorTest := flag.Bool("vendor-test", false, "Vendor test mode - continuous operation for testing readers")
 	connectTimeoutFlag := flag.Duration("connect-timeout", 10*time.Second, "Reader connection timeout")
 	detectTimeoutFlag := flag.Duration("detect-timeout", 30*time.Second, "Card/tag detection timeout")
 	pollIntervalFlag := flag.Duration("poll-interval", 50*time.Millisecond,
@@ -57,16 +55,7 @@ func run() int {
 
 	// Create configuration
 	config := DefaultConfig()
-
-	// Determine operating mode
-	switch {
-	case *quick:
-		config.Mode = ModeQuick
-	case *vendorTest:
-		config.Mode = ModeVendorTest
-	default:
-		config.Mode = ModeComprehensive
-	}
+	config.Mode = ModeComprehensive
 
 	config.ConnectTimeout = *connectTimeoutFlag
 	config.DetectTimeout = *detectTimeoutFlag
@@ -93,16 +82,8 @@ func run() int {
 	monitoring := NewMonitoring(config, output, discovery, testing)
 	modes := NewModes(config, output, discovery, monitoring, testing)
 
-	// Run the appropriate mode
-	var err error
-	switch config.Mode {
-	case ModeComprehensive:
-		err = modes.RunComprehensive(ctx)
-	case ModeQuick:
-		err = modes.RunQuick(ctx)
-	case ModeVendorTest:
-		err = modes.RunVendorTest(ctx)
-	}
+	// Run comprehensive mode
+	err := modes.RunComprehensive(ctx)
 
 	if err != nil {
 		output.Error("%v", err)

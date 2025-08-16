@@ -47,7 +47,7 @@ func NewTesting(config *Config, output *Output, discovery *Discovery) *Testing {
 }
 
 // TestReader performs basic connectivity tests on a reader
-func (t *Testing) TestReader(_ context.Context, reader detection.DeviceInfo, mode TestMode) error {
+func (t *Testing) TestReader(_ context.Context, reader detection.DeviceInfo) error {
 	t.output.ReaderTestHeader(reader)
 
 	transport, err := t.discovery.CreateTransport(reader)
@@ -91,10 +91,8 @@ func (t *Testing) TestReader(_ context.Context, reader detection.DeviceInfo, mod
 
 	t.output.TestSuccess(reader, version)
 
-	if !mode.Quick {
-		if err := t.runConnectivityTests(device); err != nil {
-			return fmt.Errorf("connectivity tests failed: %w", err)
-		}
+	if err := t.runConnectivityTests(device); err != nil {
+		return fmt.Errorf("connectivity tests failed: %w", err)
 	}
 
 	return nil
@@ -115,7 +113,7 @@ func (t *Testing) runConnectivityTests(device *pn532.Device) error {
 }
 
 // TestCard performs tests on the detected card
-func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag, mode TestMode) error {
+func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag) error {
 	// Create tag interface
 	tag, err := device.CreateTag(detected)
 	if err != nil {
@@ -124,11 +122,11 @@ func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag, mo
 
 	switch detected.Type {
 	case pn532.TagTypeNTAG:
-		return t.testNTAGTag(tag, mode)
+		return t.testNTAGTag(tag)
 	case pn532.TagTypeMIFARE:
-		return t.testMIFARETag(tag, mode)
+		return t.testMIFARETag(tag)
 	case pn532.TagTypeFeliCa:
-		return t.testFeliCaTag(tag, mode)
+		return t.testFeliCaTag(tag)
 	case pn532.TagTypeUnknown:
 		return errors.New("unknown tag type detected")
 	case pn532.TagTypeAny:
@@ -139,7 +137,7 @@ func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag, mo
 }
 
 // testNTAGTag tests NTAG-specific operations
-func (t *Testing) testNTAGTag(tag pn532.Tag, mode TestMode) error {
+func (t *Testing) testNTAGTag(tag pn532.Tag) error {
 	ntagTag, ok := tag.(*pn532.NTAGTag)
 	if !ok {
 		return errors.New("tag is not an NTAG tag")
@@ -151,10 +149,8 @@ func (t *Testing) testNTAGTag(tag pn532.Tag, mode TestMode) error {
 
 	t.testNTAGNDEF(ntagTag)
 
-	if !mode.Quick {
-		t.testNTAGWriteCapability(ntagTag)
-		t.testNTAGStress(ntagTag)
-	}
+	t.testNTAGWriteCapability(ntagTag)
+	t.testNTAGStress(ntagTag)
 
 	return nil
 }
@@ -216,7 +212,7 @@ func (*Testing) testNTAGStress(ntagTag *pn532.NTAGTag) {
 }
 
 // testMIFARETag tests MIFARE-specific operations
-func (t *Testing) testMIFARETag(tag pn532.Tag, mode TestMode) error {
+func (t *Testing) testMIFARETag(tag pn532.Tag) error {
 	mifareTag, ok := tag.(*pn532.MIFARETag)
 	if !ok {
 		return errors.New("tag is not a MIFARE tag")
@@ -227,9 +223,7 @@ func (t *Testing) testMIFARETag(tag pn532.Tag, mode TestMode) error {
 	ndef, err := mifareTag.ReadNDEF()
 	t.output.NDEFResults(ndef, err)
 
-	if !mode.Quick {
-		t.testMifareManufacturerBlock(mifareTag)
-	}
+	t.testMifareManufacturerBlock(mifareTag)
 
 	return nil
 }
@@ -265,7 +259,7 @@ func (*Testing) testMifareManufacturerBlock(mifareTag *pn532.MIFARETag) {
 }
 
 // testFeliCaTag tests FeliCa-specific operations
-func (*Testing) testFeliCaTag(_ pn532.Tag, _ TestMode) error {
+func (*Testing) testFeliCaTag(_ pn532.Tag) error {
 	_, _ = fmt.Print("   TESTING: FeliCa tag detected...")
 	// FeliCa-specific tests would go here
 	_, _ = fmt.Print(" WARNING: FeliCa testing not yet implemented\n")

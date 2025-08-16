@@ -49,7 +49,7 @@ func NewMonitoring(config *Config, output *Output, discovery *Discovery, testing
 }
 
 // MonitorCards continuously monitors for cards using proper InAutoPoll continuous polling
-func (m *Monitoring) MonitorCards(ctx context.Context, readers []detection.DeviceInfo, isQuick bool) error {
+func (m *Monitoring) MonitorCards(ctx context.Context, readers []detection.DeviceInfo) error {
 	_, _ = fmt.Println("\nMonitoring for cards... (Ctrl+C to quit)")
 
 	setup, err := m.initializeDevices(readers)
@@ -64,7 +64,7 @@ func (m *Monitoring) MonitorCards(ctx context.Context, readers []detection.Devic
 		}
 	}()
 
-	return m.startMonitoringLoop(ctx, setup, isQuick)
+	return m.startMonitoringLoop(ctx, setup)
 }
 
 func (m *Monitoring) initializeDevices(readers []detection.DeviceInfo) (*MonitoringSetup, error) {
@@ -116,12 +116,12 @@ func (m *Monitoring) createDevice(reader detection.DeviceInfo) (*pn532.Device, e
 	return device, nil
 }
 
-func (m *Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringSetup, isQuick bool) error {
+func (m *Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringSetup) error {
 	// Start continuous polling for each reader in separate goroutines
 	errChan := make(chan error, len(setup.Devices))
 	for i, device := range setup.Devices {
 		go func(_ int, dev *pn532.Device, readerPath string, state *CardState) {
-			err := m.continuousPolling(ctx, dev, readerPath, state, isQuick)
+			err := m.continuousPolling(ctx, dev, readerPath, state)
 			errChan <- err
 		}(i, device, setup.ReaderPaths[i], &setup.CardStates[i])
 	}
@@ -140,7 +140,7 @@ func (m *Monitoring) startMonitoringLoop(ctx context.Context, setup *MonitoringS
 
 // continuousPolling runs continuous InAutoPoll monitoring for a single reader
 func (m *Monitoring) continuousPolling(
-	ctx context.Context, device *pn532.Device, readerPath string, state *CardState, isQuick bool,
+	ctx context.Context, device *pn532.Device, readerPath string, state *CardState,
 ) error {
 	for {
 		select {
@@ -160,7 +160,7 @@ func (m *Monitoring) continuousPolling(
 			continue
 		}
 
-		m.processPollingResults(device, detectedTag, state, readerPath, isQuick)
+		m.processPollingResults(device, detectedTag, state, readerPath)
 
 		// Add a small delay between polling attempts to prevent excessive CPU usage
 		select {
@@ -228,7 +228,7 @@ func (*Monitoring) resetCardState(state *CardState) {
 
 // processPollingResults processes the detected tag
 func (m *Monitoring) processPollingResults(
-	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string, isQuick bool,
+	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string,
 ) {
 	if detectedTag == nil {
 		// No tag detected - only handle removal if we're in a state that allows it
@@ -249,7 +249,7 @@ func (m *Monitoring) processPollingResults(
 	}
 
 	if cardChanged || m.shouldTestCard(state, detectedTag.UID) {
-		m.testAndRecordCard(device, detectedTag, state, readerPath, isQuick)
+		m.testAndRecordCard(device, detectedTag, state, readerPath)
 	}
 }
 
@@ -285,12 +285,12 @@ func (*Monitoring) shouldTestCard(state *CardState, currentUID string) bool {
 
 // testAndRecordCard tests the card and records the result
 func (m *Monitoring) testAndRecordCard(
-	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string, isQuick bool,
+	device *pn532.Device, detectedTag *pn532.DetectedTag, state *CardState, readerPath string,
 ) {
 	// Transition to reading state to prevent removal timer from firing during long reads
 	state.TransitionToReading()
 	
-	if err := m.testing.TestCard(device, detectedTag, TestMode{Quick: isQuick}); err != nil {
+	if err := m.testing.TestCard(device, detectedTag); err != nil {
 		m.output.Error("Card test failed: %v", err)
 	} else {
 		m.output.OK("Card test completed")
@@ -303,34 +303,3 @@ func (m *Monitoring) testAndRecordCard(
 	})
 }
 
-// CheckCardsQuick performs a quick check for cards on all readers
-func (m *Monitoring) CheckCardsQuick(readers []detection.DeviceInfo) {
-	for _, reader := range readers {
-		transport, err := m.discovery.CreateTransport(reader)
-		if err != nil {
-			continue
-		}
-
-		device, err := pn532.New(transport, pn532.WithTimeout(1*time.Second))
-		if err != nil {
-			_ = transport.Close()
-			continue
-		}
-
-		// Initialize device (SAM configuration, etc.)
-		if initErr := device.Init(); initErr != nil {
-			_ = device.Close()
-			_ = transport.Close()
-			continue
-		}
-
-		tags, err := device.DetectTags(1, 0x00)
-		if err == nil && len(tags) > 0 {
-			_, _ = fmt.Printf("CARD: Card on %s: %s (UID: %s)\n",
-				reader.Path, tags[0].Type, tags[0].UID)
-		}
-
-		_ = device.Close()
-		_ = transport.Close()
-	}
-}

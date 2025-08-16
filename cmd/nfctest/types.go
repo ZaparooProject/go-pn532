@@ -32,8 +32,6 @@ type Mode int
 
 const (
 	ModeComprehensive Mode = iota
-	ModeQuick
-	ModeVendorTest
 )
 
 // Transport type constants for type-safe transport detection
@@ -65,10 +63,6 @@ func DefaultConfig() *Config {
 	}
 }
 
-// TestMode represents the testing mode configuration
-type TestMode struct {
-	Quick bool
-}
 
 // CardDetectionState represents the finite state machine for card detection
 type CardDetectionState int
