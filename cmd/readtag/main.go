@@ -161,12 +161,15 @@ func connectToDevice(cfg *config, connectOpts []pn532.ConnectOption) (*pn532.Dev
 	return device, nil
 }
 
-func setupPollingMonitor(device *pn532.Device, cfg *config) (*polling.Monitor, *polling.Config) {
-	pollingConfig := polling.DefaultConfig()
-	pollingConfig.PollInterval = *cfg.pollInterval
+func setupScanner(device *pn532.Device, cfg *config) (*polling.Scanner, error) {
+	scanConfig := polling.DefaultScanConfig()
+	scanConfig.PollInterval = *cfg.pollInterval
 
-	monitor := polling.NewMonitor(device, pollingConfig)
-	return monitor, pollingConfig
+	scanner, err := polling.NewScanner(device, scanConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create scanner: %w", err)
+	}
+	return scanner, nil
 }
 
 func writeTextIfRequested(tag pn532.Tag, writeText string) error {
@@ -182,70 +185,106 @@ func writeTextIfRequested(tag pn532.Tag, writeText string) error {
 	return nil
 }
 
+func runScannerLoop(ctx context.Context, scanner *polling.Scanner, device *pn532.Device, cfg *config) error {
+	// If write mode, use WriteToNextTag for coordinated write operation
+	if *cfg.writeText != "" {
+		return handleWriteMode(ctx, scanner, *cfg.timeout, *cfg.writeText)
+	}
+
+	// Otherwise run in continuous monitoring mode
+	// Set up tag detection callback for read-only mode
+	scanner.OnTagDetected = func(detectedTag *pn532.DetectedTag) error {
+		// Display tag information
+		return handleTagReading(device, detectedTag)
+	}
+
+	// Set up tag removal callback to ensure proper state cleanup
+	scanner.OnTagRemoved = func() {
+		_, _ = fmt.Println("Tag removed - ready for next tag...")
+	}
+
+	// Start the scanner
+	if err := scanner.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start scanner: %w", err)
+	}
+	defer func() { _ = scanner.Stop() }()
+
+	return handleContinuousMode(ctx)
+}
+
+func handleWriteMode(
+	ctx context.Context,
+	scanner *polling.Scanner,
+	timeout time.Duration,
+	writeText string,
+) error {
+	_, _ = fmt.Println("Waiting for tag to write...")
+
+	err := scanner.WriteToNextTag(ctx, timeout, func(tag pn532.Tag) error {
+		// Write the text to the tag
+		if err := writeTextIfRequested(tag, writeText); err != nil {
+			return err
+		}
+
+		// Also display tag information after writing
+		_, _ = fmt.Print("\n=== Tag Information After Write ===\n")
+		_, _ = fmt.Print(tag.DebugInfo())
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			_, _ = fmt.Printf("timeout: no tag detected within %s\n", timeout)
+			return nil
+		}
+		return fmt.Errorf("write operation failed: %w", err)
+	}
+
+	_, _ = fmt.Println("Write operation completed successfully!")
+	return nil
+}
+
+func handleContinuousMode(ctx context.Context) error {
+	// Just wait for context cancellation in continuous mode
+	<-ctx.Done()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		_, _ = fmt.Println("Monitoring session completed")
+	}
+	return nil
+}
+
 func main() {
 	cfg := parseFlags()
-
 	connectOpts := buildConnectOptions(cfg)
 
 	device, err := connectToDevice(cfg, connectOpts)
 	if err != nil {
-		_, _ = fmt.Printf("Failed to connect to device: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(os.Stderr, "Failed to connect to device: %v\n", err)
+		return
 	}
 	defer func() { _ = device.Close() }()
 
-	monitor, _ := setupPollingMonitor(device, cfg)
-	defer func() { _ = monitor.Close() }()
+	scanner, err := setupScanner(device, cfg)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Failed to setup scanner: %v\n", err)
+		return
+	}
 
 	_, _ = fmt.Printf("Waiting for NFC tag (timeout: %s, poll interval: %s)...\n", *cfg.timeout, *cfg.pollInterval)
 
-	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), *cfg.timeout)
 	defer cancel()
 
-	// Channel to signal completion
-	done := make(chan error, 1)
+	if err := runScannerLoop(ctx, scanner, device, cfg); err != nil {
+		_, _ = fmt.Printf("%v\n", err)
+	}
+}
 
-	// Set up callback for when a card is detected
-	monitor.OnCardDetected = func(detectedTag *pn532.DetectedTag) error {
-		// Create tag from detected tag
-		tag, err := device.CreateTag(detectedTag)
-		if err != nil {
-			wrappedErr := fmt.Errorf("failed to create tag: %w", err)
-			done <- wrappedErr
-			return wrappedErr
-		}
-
-		// Handle write operation if requested
-		if err := writeTextIfRequested(tag, *cfg.writeText); err != nil {
-			done <- err
-			return err
-		}
-
-		// Print tag info
-		_, _ = fmt.Print(tag.DebugInfo())
-
-		// Signal completion
-		done <- nil
-		return nil
+func handleTagReading(device *pn532.Device, detectedTag *pn532.DetectedTag) error {
+	tag, err := device.CreateTag(detectedTag)
+	if err != nil {
+		return fmt.Errorf("failed to create tag: %w", err)
 	}
 
-	// Start monitoring in a goroutine
-	go func() {
-		if err := monitor.Start(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			done <- fmt.Errorf("monitoring failed: %w", err)
-		}
-	}()
-
-	// Wait for either tag detection or timeout
-	select {
-	case err := <-done:
-		if err != nil {
-			_, _ = fmt.Printf("%v\n", err)
-		}
-	case <-ctx.Done():
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			_, _ = fmt.Printf("timeout: no tag detected within %s\n", *cfg.timeout)
-		}
-	}
+	_, _ = fmt.Print(tag.DebugInfo())
+	return nil
 }

@@ -136,6 +136,24 @@ func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag) er
 	}
 }
 
+// TestCardWithTag tests a card using an already created tag instance
+// This method is used with the polling.Monitor.WriteToTag for thread-safe operations
+// TestCardWithTag tests a card using an already created tag instance
+// This method is used with the polling.Monitor.WriteToTag for thread-safe operations
+func (t *Testing) TestCardWithTag(tag pn532.Tag) error {
+	switch typedTag := tag.(type) {
+	case *pn532.NTAGTag:
+		return t.testNTAGTag(typedTag)
+	case *pn532.MIFARETag:
+		return t.testMIFARETag(typedTag)
+	case *pn532.FeliCaTag:
+		return t.testFeliCaTag(typedTag)
+	default:
+		_, _ = fmt.Printf("   Unsupported tag type: %T\n", tag)
+		return fmt.Errorf("unsupported tag type: %T", tag)
+	}
+}
+
 // testNTAGTag tests NTAG-specific operations
 func (t *Testing) testNTAGTag(tag pn532.Tag) error {
 	ntagTag, ok := tag.(*pn532.NTAGTag)

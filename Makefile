@@ -77,9 +77,6 @@ clean:
 check: lint test
 	@echo "All checks passed!"
 
-tdd:
-	go test -json ./... 2>&1 | tdd-guard-go -project-root $(CURDIR)
-
 # Show help
 help:
 	@echo "go-pn532 Makefile"

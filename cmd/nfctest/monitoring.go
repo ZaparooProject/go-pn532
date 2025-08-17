@@ -93,8 +93,10 @@ func (m *Monitoring) initializeDevices(readers []detection.DeviceInfo) (*Monitor
 		readerPath := reader.Path
 		monitor.OnCardDetected = func(tag *pn532.DetectedTag) error {
 			m.output.NewCardDetected(readerPath, string(tag.Type), tag.UID)
-			// Test the card
-			if err := m.testing.TestCard(device, tag); err != nil {
+			// Use the thread-safe WriteToTag method for testing operations
+			if err := monitor.WriteToTag(tag, func(cardTag pn532.Tag) error {
+				return m.testing.TestCardWithTag(cardTag)
+			}); err != nil {
 				m.output.Error("Card test failed: %v", err)
 			} else {
 				m.output.OK("Card test completed")
@@ -106,8 +108,10 @@ func (m *Monitoring) initializeDevices(readers []detection.DeviceInfo) (*Monitor
 		}
 		monitor.OnCardChanged = func(tag *pn532.DetectedTag) error {
 			m.output.DifferentCardDetected(readerPath, string(tag.Type), tag.UID)
-			// Test the card again since it changed
-			if err := m.testing.TestCard(device, tag); err != nil {
+			// Use the thread-safe WriteToTag method for testing operations
+			if err := monitor.WriteToTag(tag, func(cardTag pn532.Tag) error {
+				return m.testing.TestCardWithTag(cardTag)
+			}); err != nil {
 				m.output.Error("Card test failed: %v", err)
 			} else {
 				m.output.OK("Card test completed")
