@@ -79,8 +79,8 @@ func run() int {
 	output := NewOutput(config.Verbose)
 	discovery := NewDiscovery(config, output)
 	testing := NewTesting(config, output, discovery)
-	monitoring := NewMonitoring(config, output, discovery, testing)
-	modes := NewModes(config, output, discovery, monitoring, testing)
+	sessionManager := NewSessionManager(config, output, discovery, testing)
+	modes := NewModes(config, output, discovery, sessionManager, testing)
 
 	// Run comprehensive mode
 	err := modes.RunComprehensive(ctx)

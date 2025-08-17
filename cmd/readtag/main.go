@@ -161,15 +161,12 @@ func connectToDevice(cfg *config, connectOpts []pn532.ConnectOption) (*pn532.Dev
 	return device, nil
 }
 
-func setupScanner(device *pn532.Device, cfg *config) (*polling.Scanner, error) {
-	scanConfig := polling.DefaultScanConfig()
-	scanConfig.PollInterval = *cfg.pollInterval
+func setupSession(device *pn532.Device, cfg *config) (*polling.Session, error) {
+	sessionConfig := polling.DefaultConfig()
+	sessionConfig.PollInterval = *cfg.pollInterval
 
-	scanner, err := polling.NewScanner(device, scanConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create scanner: %w", err)
-	}
-	return scanner, nil
+	session := polling.NewSession(device, sessionConfig)
+	return session, nil
 }
 
 func writeTextIfRequested(tag pn532.Tag, writeText string) error {
@@ -185,42 +182,41 @@ func writeTextIfRequested(tag pn532.Tag, writeText string) error {
 	return nil
 }
 
-func runScannerLoop(ctx context.Context, scanner *polling.Scanner, device *pn532.Device, cfg *config) error {
-	// If write mode, use WriteToNextTag for coordinated write operation
+func runSessionLoop(ctx context.Context, session *polling.Session, device *pn532.Device, cfg *config) error {
+	// If write mode, use WriteToTag for coordinated write operation
 	if *cfg.writeText != "" {
-		return handleWriteMode(ctx, scanner, *cfg.timeout, *cfg.writeText)
+		return handleWriteMode(ctx, session, *cfg.timeout, *cfg.writeText)
 	}
 
-	// Otherwise run in continuous monitoring mode
+	// Otherwise run in continuous session mode
 	// Set up tag detection callback for read-only mode
-	scanner.OnTagDetected = func(detectedTag *pn532.DetectedTag) error {
+	session.OnCardDetected = func(detectedTag *pn532.DetectedTag) error {
 		// Display tag information
 		return handleTagReading(device, detectedTag)
 	}
 
 	// Set up tag removal callback to ensure proper state cleanup
-	scanner.OnTagRemoved = func() {
+	session.OnCardRemoved = func() {
 		_, _ = fmt.Println("Tag removed - ready for next tag...")
 	}
 
-	// Start the scanner
-	if err := scanner.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start scanner: %w", err)
+	// Start the session - this blocks until context is cancelled
+	if err := session.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start session: %w", err)
 	}
-	defer func() { _ = scanner.Stop() }()
 
 	return handleContinuousMode(ctx)
 }
 
 func handleWriteMode(
 	ctx context.Context,
-	scanner *polling.Scanner,
+	session *polling.Session,
 	timeout time.Duration,
 	writeText string,
 ) error {
 	_, _ = fmt.Println("Waiting for tag to write...")
 
-	err := scanner.WriteToNextTag(ctx, timeout, func(tag pn532.Tag) error {
+	err := session.WriteToNextTag(ctx, timeout, func(tag pn532.Tag) error {
 		// Write the text to the tag
 		if err := writeTextIfRequested(tag, writeText); err != nil {
 			return err
@@ -247,7 +243,7 @@ func handleContinuousMode(ctx context.Context) error {
 	// Just wait for context cancellation in continuous mode
 	<-ctx.Done()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		_, _ = fmt.Println("Monitoring session completed")
+		_, _ = fmt.Println("Session completed")
 	}
 	return nil
 }
@@ -263,9 +259,9 @@ func main() {
 	}
 	defer func() { _ = device.Close() }()
 
-	scanner, err := setupScanner(device, cfg)
+	session, err := setupSession(device, cfg)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Failed to setup scanner: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Failed to setup session: %v\n", err)
 		return
 	}
 
@@ -274,7 +270,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *cfg.timeout)
 	defer cancel()
 
-	if err := runScannerLoop(ctx, scanner, device, cfg); err != nil {
+	if err := runSessionLoop(ctx, session, device, cfg); err != nil {
 		_, _ = fmt.Printf("%v\n", err)
 	}
 }

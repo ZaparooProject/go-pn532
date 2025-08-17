@@ -62,8 +62,8 @@ func DefaultConfig() *Config {
 	}
 }
 
-// MonitoringSetup holds monitoring configuration
-type MonitoringSetup struct {
-	Monitors    []*polling.Monitor
+// SessionSetup holds session configuration
+type SessionSetup struct {
+	Sessions    []*polling.Session
 	ReaderPaths []string
 }

@@ -21,6 +21,7 @@
 package polling
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -52,20 +53,20 @@ func createTestDetectedTag() *pn532.DetectedTag {
 	}
 }
 
-func TestNewMonitor(t *testing.T) {
+func TestNewSession(t *testing.T) {
 	t.Parallel()
 	device, _ := createMockDeviceWithTransport(t)
 
 	t.Run("WithDefaultConfig", func(t *testing.T) {
 		t.Parallel()
-		monitor := NewMonitor(device, nil)
+		session := NewSession(device, nil)
 
-		assert.NotNil(t, monitor)
-		assert.Equal(t, device, monitor.device)
-		assert.NotNil(t, monitor.config)
-		assert.NotNil(t, monitor.pauseChan)
-		assert.NotNil(t, monitor.resumeChan)
-		assert.False(t, monitor.isPaused.Load())
+		assert.NotNil(t, session)
+		assert.Equal(t, device, session.device)
+		assert.NotNil(t, session.config)
+		assert.NotNil(t, session.pauseChan)
+		assert.NotNil(t, session.resumeChan)
+		assert.False(t, session.isPaused.Load())
 	})
 
 	t.Run("WithCustomConfig", func(t *testing.T) {
@@ -73,54 +74,54 @@ func TestNewMonitor(t *testing.T) {
 		config := &Config{
 			PollInterval: 50 * time.Millisecond,
 		}
-		monitor := NewMonitor(device, config)
+		session := NewSession(device, config)
 
-		assert.NotNil(t, monitor)
-		assert.Equal(t, config, monitor.config)
-		assert.Equal(t, 50*time.Millisecond, monitor.config.PollInterval)
+		assert.NotNil(t, session)
+		assert.Equal(t, config, session.config)
+		assert.Equal(t, 50*time.Millisecond, session.config.PollInterval)
 	})
 }
 
-func TestMonitor_PauseResume(t *testing.T) {
+func TestSession_PauseResume(t *testing.T) {
 	t.Parallel()
 
 	t.Run("InitiallyNotPaused", func(t *testing.T) {
 		t.Parallel()
 		device, _ := createMockDeviceWithTransport(t)
-		monitor := NewMonitor(device, nil)
-		assert.False(t, monitor.isPaused.Load())
+		session := NewSession(device, nil)
+		assert.False(t, session.isPaused.Load())
 	})
 
 	t.Run("PauseOperation", func(t *testing.T) {
 		t.Parallel()
 		device, _ := createMockDeviceWithTransport(t)
-		monitor := NewMonitor(device, nil)
-		monitor.Pause()
-		assert.True(t, monitor.isPaused.Load())
+		session := NewSession(device, nil)
+		session.Pause()
+		assert.True(t, session.isPaused.Load())
 
 		// Pausing again should be idempotent
-		monitor.Pause()
-		assert.True(t, monitor.isPaused.Load())
+		session.Pause()
+		assert.True(t, session.isPaused.Load())
 	})
 
 	t.Run("ResumeOperation", func(t *testing.T) {
 		t.Parallel()
 		device, _ := createMockDeviceWithTransport(t)
-		monitor := NewMonitor(device, nil)
-		monitor.Pause() // First pause it
-		monitor.Resume()
-		assert.False(t, monitor.isPaused.Load())
+		session := NewSession(device, nil)
+		session.Pause() // First pause it
+		session.Resume()
+		assert.False(t, session.isPaused.Load())
 
 		// Resuming again should be idempotent
-		monitor.Resume()
-		assert.False(t, monitor.isPaused.Load())
+		session.Resume()
+		assert.False(t, session.isPaused.Load())
 	})
 }
 
-func TestMonitor_ConcurrentPauseResume(t *testing.T) {
+func TestSession_ConcurrentPauseResume(t *testing.T) {
 	t.Parallel()
 	device, _ := createMockDeviceWithTransport(t)
-	monitor := NewMonitor(device, nil)
+	session := NewSession(device, nil)
 
 	// Test concurrent pause/resume operations
 	var wg sync.WaitGroup
@@ -132,9 +133,9 @@ func TestMonitor_ConcurrentPauseResume(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				monitor.Pause()
+				session.Pause()
 				time.Sleep(time.Microsecond)
-				monitor.Resume()
+				session.Resume()
 			}
 		}()
 	}
@@ -142,16 +143,16 @@ func TestMonitor_ConcurrentPauseResume(t *testing.T) {
 	wg.Wait()
 
 	// Should end up in a consistent state
-	assert.False(t, monitor.isPaused.Load())
+	assert.False(t, session.isPaused.Load())
 }
 
-func TestMonitor_WriteToTag(t *testing.T) {
+func TestSession_WriteToTag(t *testing.T) {
 	t.Parallel()
 
 	t.Run("SuccessfulWrite", func(t *testing.T) {
 		t.Parallel()
 		device, mockTransport := createMockDeviceWithTransport(t)
-		monitor := NewMonitor(device, nil)
+		session := NewSession(device, nil)
 
 		// Setup mock responses for tag creation and write operations
 		mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -160,20 +161,20 @@ func TestMonitor_WriteToTag(t *testing.T) {
 		detectedTag := createTestDetectedTag()
 		writeCallCount := 0
 
-		err := monitor.WriteToTag(detectedTag, func(_ pn532.Tag) error {
+		err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
 			writeCallCount++
 			return nil
 		})
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, writeCallCount)
-		assert.False(t, monitor.isPaused.Load()) // Should be resumed after write
+		assert.False(t, session.isPaused.Load()) // Should be resumed after write
 	})
 
 	t.Run("WriteError", func(t *testing.T) {
 		t.Parallel()
 		device, mockTransport := createMockDeviceWithTransport(t)
-		monitor := NewMonitor(device, nil)
+		session := NewSession(device, nil)
 
 		// Setup mock responses for tag creation and write operations
 		mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -182,19 +183,19 @@ func TestMonitor_WriteToTag(t *testing.T) {
 		detectedTag := createTestDetectedTag()
 		expectedErr := errors.New("write failed")
 
-		err := monitor.WriteToTag(detectedTag, func(_ pn532.Tag) error {
+		err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
 			return expectedErr
 		})
 
 		require.Error(t, err)
 		assert.Equal(t, expectedErr, err)
-		assert.False(t, monitor.isPaused.Load()) // Should be resumed even on error
+		assert.False(t, session.isPaused.Load()) // Should be resumed even on error
 	})
 
 	t.Run("TagCreationError", func(t *testing.T) {
 		t.Parallel()
 		device, mockTransport := createMockDeviceWithTransport(t)
-		monitor := NewMonitor(device, nil)
+		session := NewSession(device, nil)
 
 		// Setup mock responses for tag creation and write operations
 		mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -207,21 +208,21 @@ func TestMonitor_WriteToTag(t *testing.T) {
 			Type:     pn532.TagTypeUnknown, // This will cause CreateTag to return ErrInvalidTag
 		}
 
-		err := monitor.WriteToTag(invalidTag, func(_ pn532.Tag) error {
+		err := session.WriteToTag(context.Background(), invalidTag, func(_ pn532.Tag) error {
 			t.Fatal("Write function should not be called")
 			return nil
 		})
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to create tag")
-		assert.False(t, monitor.isPaused.Load()) // Should be resumed even on error
+		assert.False(t, session.isPaused.Load()) // Should be resumed even on error
 	})
 }
 
-func TestMonitor_ConcurrentWrites(t *testing.T) {
+func TestSession_ConcurrentWrites(t *testing.T) {
 	t.Parallel()
 	device, mockTransport := createMockDeviceWithTransport(t)
-	monitor := NewMonitor(device, nil)
+	session := NewSession(device, nil)
 
 	// Setup mock responses - use correct InSelect response format
 	mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -241,7 +242,7 @@ func TestMonitor_ConcurrentWrites(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			err := monitor.WriteToTag(detectedTag, func(_ pn532.Tag) error {
+			err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
 				mu.Lock()
 				writeOrder = append(writeOrder, id)
 				mu.Unlock()
@@ -259,7 +260,7 @@ func TestMonitor_ConcurrentWrites(t *testing.T) {
 
 	// All writes should have completed
 	assert.Len(t, writeOrder, numWrites)
-	assert.False(t, monitor.isPaused.Load())
+	assert.False(t, session.isPaused.Load())
 
 	// Verify writes were serialized (no overlapping)
 	// Each write should complete before the next starts due to mutex
@@ -268,10 +269,10 @@ func TestMonitor_ConcurrentWrites(t *testing.T) {
 	}
 }
 
-func TestMonitor_WriteToTagPausesBehavior(t *testing.T) {
+func TestSession_WriteToTagPausesBehavior(t *testing.T) {
 	t.Parallel()
 	device, mockTransport := createMockDeviceWithTransport(t)
-	monitor := NewMonitor(device, nil)
+	session := NewSession(device, nil)
 
 	// Setup mock responses - use correct InSelect response format
 	mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -283,26 +284,26 @@ func TestMonitor_WriteToTagPausesBehavior(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// Monitor pause state changes
+	// Session pause state changes
 	go func() {
 		defer wg.Done()
 		for {
-			if monitor.isPaused.Load() {
+			if session.isPaused.Load() {
 				pauseDetected = true
 			}
 			time.Sleep(time.Millisecond)
 
 			// Break when write is complete
-			if pauseDetected && !monitor.isPaused.Load() {
+			if pauseDetected && !session.isPaused.Load() {
 				resumeDetected = true
 				break
 			}
 		}
 	}()
 
-	err := monitor.WriteToTag(detectedTag, func(_ pn532.Tag) error {
-		// During write, monitor should be paused
-		assert.True(t, monitor.isPaused.Load())
+	err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
+		// During write, session should be paused
+		assert.True(t, session.isPaused.Load())
 		time.Sleep(20 * time.Millisecond) // Simulate write operation
 		return nil
 	})
@@ -310,15 +311,15 @@ func TestMonitor_WriteToTagPausesBehavior(t *testing.T) {
 	wg.Wait()
 
 	require.NoError(t, err)
-	assert.True(t, pauseDetected, "Monitor should have been paused during write")
-	assert.True(t, resumeDetected, "Monitor should have been resumed after write")
-	assert.False(t, monitor.isPaused.Load(), "Monitor should be resumed after write")
+	assert.True(t, pauseDetected, "Session should have been paused during write")
+	assert.True(t, resumeDetected, "Session should have been resumed after write")
+	assert.False(t, session.isPaused.Load(), "Session should be resumed after write")
 }
 
-func TestMonitor_WriteToTagWithLongOperation(t *testing.T) {
+func TestSession_WriteToTagWithLongOperation(t *testing.T) {
 	t.Parallel()
 	device, mockTransport := createMockDeviceWithTransport(t)
-	monitor := NewMonitor(device, nil)
+	session := NewSession(device, nil)
 
 	// Setup mock responses - use correct InSelect response format
 	mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -328,7 +329,7 @@ func TestMonitor_WriteToTagWithLongOperation(t *testing.T) {
 
 	start := time.Now()
 
-	err := monitor.WriteToTag(detectedTag, func(_ pn532.Tag) error {
+	err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
 		// Simulate a longer write operation
 		time.Sleep(100 * time.Millisecond)
 		return nil
@@ -338,10 +339,10 @@ func TestMonitor_WriteToTagWithLongOperation(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, duration, 100*time.Millisecond)
-	assert.False(t, monitor.isPaused.Load())
+	assert.False(t, session.isPaused.Load())
 }
 
-func TestMonitor_WriteToTagErrorHandling(t *testing.T) {
+func TestSession_WriteToTagErrorHandling(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -376,9 +377,9 @@ func TestMonitor_WriteToTagErrorHandling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create separate monitor instance for each subtest to avoid race conditions
+			// Create separate session instance for each subtest to avoid race conditions
 			device, mockTransport := createMockDeviceWithTransport(t)
-			monitor := NewMonitor(device, nil)
+			session := NewSession(device, nil)
 
 			// Setup mock responses - use correct InSelect response format
 			// InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -387,7 +388,7 @@ func TestMonitor_WriteToTagErrorHandling(t *testing.T) {
 
 			detectedTag := createTestDetectedTag()
 
-			err := executeWriteWithPanicRecovery(monitor, detectedTag, tt.writeFunc)
+			err := executeWriteWithPanicRecovery(session, detectedTag, tt.writeFunc)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -395,14 +396,14 @@ func TestMonitor_WriteToTagErrorHandling(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Monitor should always be resumed after write, even on error
-			assert.False(t, monitor.isPaused.Load())
+			// Session should always be resumed after write, even on error
+			assert.False(t, session.isPaused.Load())
 		})
 	}
 }
 
 func executeWriteWithPanicRecovery(
-	monitor *Monitor,
+	session *Session,
 	tag *pn532.DetectedTag,
 	writeFunc func(pn532.Tag) error,
 ) (err error) {
@@ -411,13 +412,13 @@ func executeWriteWithPanicRecovery(
 			err = errors.New("panic occurred")
 		}
 	}()
-	return monitor.WriteToTag(tag, writeFunc)
+	return session.WriteToTag(context.Background(), tag, writeFunc)
 }
 
-func TestMonitor_ConcurrentWriteStressTest(t *testing.T) {
+func TestSession_ConcurrentWriteStressTest(t *testing.T) {
 	t.Parallel()
 	device, mockTransport := createMockDeviceWithTransport(t)
-	monitor := NewMonitor(device, nil)
+	session := NewSession(device, nil)
 
 	// Setup mock responses - use correct InSelect response format
 	mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response (cmd 0x54, response 0x55, status 0x00)
@@ -442,7 +443,7 @@ func TestMonitor_ConcurrentWriteStressTest(t *testing.T) {
 				successCount:       &successCount,
 				errorCount:         &errorCount,
 			}
-			runStressTestWrites(monitor, detectedTag, params)
+			runStressTestWrites(session, detectedTag, params)
 		}(i)
 	}
 
@@ -450,7 +451,7 @@ func TestMonitor_ConcurrentWriteStressTest(t *testing.T) {
 
 	totalWrites := int64(numGoroutines * writesPerGoroutine)
 	assert.Equal(t, totalWrites, successCount+errorCount)
-	assert.False(t, monitor.isPaused.Load())
+	assert.False(t, session.isPaused.Load())
 
 	// We expect some successes and some errors based on our error condition
 	assert.Positive(t, successCount)
@@ -458,12 +459,12 @@ func TestMonitor_ConcurrentWriteStressTest(t *testing.T) {
 }
 
 func runStressTestWrites(
-	monitor *Monitor,
+	session *Session,
 	tag *pn532.DetectedTag,
 	params stressTestParams,
 ) {
 	for j := 0; j < params.writesPerGoroutine; j++ {
-		err := monitor.WriteToTag(tag, func(_ pn532.Tag) error {
+		err := session.WriteToTag(context.Background(), tag, func(_ pn532.Tag) error {
 			// Simulate variable write times
 			time.Sleep(time.Duration(params.routineID+j) * time.Millisecond)
 
@@ -487,4 +488,157 @@ type stressTestParams struct {
 	errorCount         *int64
 	routineID          int
 	writesPerGoroutine int
+}
+
+// testTimerCleanupTransition tests timer cleanup behavior during state transitions
+func testTimerCleanupTransition(t *testing.T, testName string,
+	setupFn func(*CardState) *atomic.Bool,
+	transitionFn func(*CardState) *atomic.Bool,
+	expectedState CardDetectionState,
+) {
+	t.Helper()
+	t.Run(testName, func(t *testing.T) {
+		t.Parallel()
+		cs := &CardState{}
+
+		// Set up initial timer
+		initialCallback := setupFn(cs)
+		require.NotNil(t, cs.RemovalTimer)
+
+		// Perform transition
+		transitionCallback := transitionFn(cs)
+
+		// Verify state and timer
+		if expectedState != StateIdle {
+			require.NotNil(t, cs.RemovalTimer)
+		} else {
+			assert.Nil(t, cs.RemovalTimer)
+		}
+		assert.Equal(t, expectedState, cs.DetectionState)
+
+		// Wait and verify callbacks
+		time.Sleep(60 * time.Millisecond)
+		assert.False(t, initialCallback.Load(), "Initial timer should not fire after cleanup")
+		if transitionCallback != nil {
+			assert.False(t, transitionCallback.Load(), "Transition timer should not fire yet")
+		}
+	})
+}
+
+// TestCardState_TimerCleanup tests that removal timers are properly cleaned up
+func TestCardState_TimerCleanup(t *testing.T) {
+	t.Parallel()
+
+	testTimerCleanupTransition(t, "TransitionToPostReadGrace_CleansUpTimer",
+		func(cs *CardState) *atomic.Bool {
+			var callback atomic.Bool
+			cs.TransitionToDetected(100*time.Millisecond, func() { callback.Store(true) })
+			return &callback
+		},
+		func(cs *CardState) *atomic.Bool {
+			var callback atomic.Bool
+			cs.TransitionToPostReadGrace(100*time.Millisecond, func() { callback.Store(true) })
+			return &callback
+		},
+		StatePostReadGrace,
+	)
+
+	testTimerCleanupTransition(t, "TransitionToDetected_CleansUpTimer",
+		func(cs *CardState) *atomic.Bool {
+			var callback atomic.Bool
+			cs.TransitionToPostReadGrace(50*time.Millisecond, func() { callback.Store(true) })
+			return &callback
+		},
+		func(cs *CardState) *atomic.Bool {
+			var callback atomic.Bool
+			cs.TransitionToDetected(100*time.Millisecond, func() { callback.Store(true) })
+			return &callback
+		},
+		StateTagDetected,
+	)
+
+	testTimerCleanupTransition(t, "TransitionToIdle_CleansUpTimer",
+		func(cs *CardState) *atomic.Bool {
+			var callback atomic.Bool
+			cs.TransitionToDetected(100*time.Millisecond, func() { callback.Store(true) })
+			return &callback
+		},
+		func(cs *CardState) *atomic.Bool {
+			cs.TransitionToIdle()
+			// Verify additional idle state properties
+			assert.False(t, cs.Present)
+			assert.Empty(t, cs.LastUID)
+			assert.Empty(t, cs.LastType)
+			assert.Empty(t, cs.TestedUID)
+			assert.True(t, cs.LastSeenTime.IsZero())
+			assert.True(t, cs.ReadStartTime.IsZero())
+			return nil
+		},
+		StateIdle,
+	)
+
+	t.Run("TransitionToReading_CleansUpTimer", func(t *testing.T) {
+		t.Parallel()
+		cs := &CardState{}
+
+		// First set up a timer
+		var callbackCalled atomic.Bool
+		cs.TransitionToDetected(100*time.Millisecond, func() {
+			callbackCalled.Store(true)
+		})
+		require.NotNil(t, cs.RemovalTimer)
+
+		// Now transition to reading - should clean up the timer
+		cs.TransitionToReading()
+
+		// Timer should be nil and state should be reading
+		assert.Nil(t, cs.RemovalTimer)
+		assert.Equal(t, StateReading, cs.DetectionState)
+		assert.False(t, cs.ReadStartTime.IsZero())
+
+		// Original timer should not fire since it was cleaned up
+		time.Sleep(60 * time.Millisecond)
+		assert.False(t, callbackCalled.Load(), "Timer callback should not fire after cleanup to reading")
+	})
+}
+
+// TestSafeTimerStop tests the safeTimerStop helper function that should eliminate duplication
+func TestSafeTimerStop(t *testing.T) {
+	t.Parallel()
+
+	t.Run("StopsActiveTimer", func(t *testing.T) {
+		t.Parallel()
+		var callbackCalled atomic.Bool
+		timer := time.AfterFunc(100*time.Millisecond, func() {
+			callbackCalled.Store(true)
+		})
+
+		// This should stop the timer and drain the channel
+		safeTimerStop(timer)
+
+		// Wait longer than timer would have fired
+		time.Sleep(150 * time.Millisecond)
+		assert.False(t, callbackCalled.Load(), "Timer callback should not fire after safeTimerStop")
+	})
+
+	t.Run("HandlesNilTimer", func(t *testing.T) {
+		t.Parallel()
+		// Should not panic
+		safeTimerStop(nil)
+	})
+
+	t.Run("HandlesAlreadyFiredTimer", func(t *testing.T) {
+		t.Parallel()
+		var callbackCalled atomic.Bool
+		timer := time.AfterFunc(1*time.Millisecond, func() {
+			callbackCalled.Store(true)
+		})
+
+		// Wait for timer to fire
+		time.Sleep(10 * time.Millisecond)
+		assert.True(t, callbackCalled.Load())
+
+		// Should not panic or block
+		safeTimerStop(timer)
+	})
 }

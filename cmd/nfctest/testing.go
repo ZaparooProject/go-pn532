@@ -137,9 +137,9 @@ func (t *Testing) TestCard(device *pn532.Device, detected *pn532.DetectedTag) er
 }
 
 // TestCardWithTag tests a card using an already created tag instance
-// This method is used with the polling.Monitor.WriteToTag for thread-safe operations
+// This method is used with the polling.Session.WriteToTag for thread-safe operations
 // TestCardWithTag tests a card using an already created tag instance
-// This method is used with the polling.Monitor.WriteToTag for thread-safe operations
+// This method is used with the polling.Session.WriteToTag for thread-safe operations
 func (t *Testing) TestCardWithTag(tag pn532.Tag) error {
 	switch typedTag := tag.(type) {
 	case *pn532.NTAGTag:

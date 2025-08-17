@@ -50,22 +50,30 @@ type CardState struct {
 // ErrNoTagInPoll indicates no tag was detected during polling (not an error condition)
 var ErrNoTagInPoll = errors.New("no tag detected in polling cycle")
 
+// safeTimerStop safely stops a timer and drains its channel to prevent resource leaks
+func safeTimerStop(timer *time.Timer) {
+	if timer != nil {
+		timer.Stop()
+		// Drain timer channel if the timer didn't fire to prevent resource leaks
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
 // TransitionToReading moves to reading state and suspends removal timer
 func (cs *CardState) TransitionToReading() {
 	cs.DetectionState = StateReading
 	cs.ReadStartTime = time.Now()
-	if cs.RemovalTimer != nil {
-		cs.RemovalTimer.Stop()
-		cs.RemovalTimer = nil
-	}
+	safeTimerStop(cs.RemovalTimer)
+	cs.RemovalTimer = nil
 }
 
 // TransitionToPostReadGrace moves to post-read grace period with short timeout
 func (cs *CardState) TransitionToPostReadGrace(timeout time.Duration, callback func()) {
 	cs.DetectionState = StatePostReadGrace
-	if cs.RemovalTimer != nil {
-		cs.RemovalTimer.Stop()
-	}
+	safeTimerStop(cs.RemovalTimer)
 	// Short grace period after read completion
 	cs.RemovalTimer = time.AfterFunc(timeout/2, callback)
 }
@@ -74,9 +82,7 @@ func (cs *CardState) TransitionToPostReadGrace(timeout time.Duration, callback f
 func (cs *CardState) TransitionToDetected(timeout time.Duration, callback func()) {
 	cs.DetectionState = StateTagDetected
 	cs.LastSeenTime = time.Now()
-	if cs.RemovalTimer != nil {
-		cs.RemovalTimer.Stop()
-	}
+	safeTimerStop(cs.RemovalTimer)
 	cs.RemovalTimer = time.AfterFunc(timeout, callback)
 }
 
@@ -89,10 +95,8 @@ func (cs *CardState) TransitionToIdle() {
 	cs.TestedUID = ""
 	cs.LastSeenTime = time.Time{}
 	cs.ReadStartTime = time.Time{}
-	if cs.RemovalTimer != nil {
-		cs.RemovalTimer.Stop()
-		cs.RemovalTimer = nil
-	}
+	safeTimerStop(cs.RemovalTimer)
+	cs.RemovalTimer = nil
 }
 
 // CanStartRemovalTimer returns true if the state allows removal timer to run

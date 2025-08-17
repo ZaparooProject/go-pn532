@@ -5,6 +5,17 @@ GOCMD=go
 GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
 
+# TDD Guard detection and setup
+TDDGUARD_AVAILABLE := $(shell command -v tdd-guard-go 2> /dev/null)
+PROJECT_ROOT := $(PWD)
+
+# Conditional test command - pipes through tdd-guard-go if available
+ifdef TDDGUARD_AVAILABLE
+	GOTEST_WITH_TDD = $(GOTEST) -json ./... 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+else
+	GOTEST_WITH_TDD = $(GOTEST)
+endif
+
 # Default target
 all: lint test build
 
@@ -30,12 +41,22 @@ test: test-unit test-integration
 # Run unit tests only
 test-unit:
 	@echo "Running unit tests..."
+ifdef TDDGUARD_AVAILABLE
+	@echo "TDD Guard detected - integrating test reporting..."
+	$(GOTEST) -json -v -race -coverprofile=coverage-unit.txt -covermode=atomic ./... 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+else
 	$(GOTEST) -v -race -coverprofile=coverage-unit.txt -covermode=atomic ./...
+endif
 
 # Run integration tests only
 test-integration:
 	@echo "Running integration tests..."
+ifdef TDDGUARD_AVAILABLE
+	@echo "TDD Guard detected - integrating test reporting..."
+	$(GOTEST) -json -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic ./... 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+else
 	$(GOTEST) -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic ./...
+endif
 
 # Run unit tests with coverage report
 coverage-unit: test-unit
@@ -64,6 +85,11 @@ lint-fix:
 	@echo "Running linters with auto-fix..."
 	$(GOCMD) mod tidy
 	golangci-lint run --fix ./...
+
+# Run benchmarks
+bench:
+	@echo "Running benchmarks..."
+	$(GOTEST) -bench=. -benchmem ./...
 
 # Clean build artifacts
 clean:
@@ -98,3 +124,5 @@ help:
 	@echo "  clean               - Remove build artifacts and coverage files"
 	@echo "  check               - Run lint and test (pre-commit check)"
 	@echo "  help                - Show this help message"
+	@echo ""
+	@echo "Note: Test commands automatically integrate with tdd-guard-go if available"

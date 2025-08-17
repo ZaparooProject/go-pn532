@@ -28,21 +28,23 @@ import (
 
 // Modes handles the different operating modes
 type Modes struct {
-	config     *Config
-	output     *Output
-	discovery  *Discovery
-	monitoring *Monitoring
-	testing    *Testing
+	config         *Config
+	output         *Output
+	discovery      *Discovery
+	sessionManager *SessionManager
+	testing        *Testing
 }
 
 // NewModes creates a new modes handler
-func NewModes(config *Config, output *Output, discovery *Discovery, monitoring *Monitoring, testing *Testing) *Modes {
+func NewModes(
+	config *Config, output *Output, discovery *Discovery, sessionManager *SessionManager, testing *Testing,
+) *Modes {
 	return &Modes{
-		config:     config,
-		output:     output,
-		discovery:  discovery,
-		monitoring: monitoring,
-		testing:    testing,
+		config:         config,
+		output:         output,
+		discovery:      discovery,
+		sessionManager: sessionManager,
+		testing:        testing,
 	}
 }
 
@@ -70,5 +72,5 @@ func (m *Modes) RunComprehensive(ctx context.Context) error {
 	}
 
 	// Start continuous card monitoring
-	return m.monitoring.MonitorCards(ctx, readers)
+	return m.sessionManager.MonitorCards(ctx, readers)
 }
