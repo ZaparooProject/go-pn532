@@ -156,6 +156,7 @@ type ConnectOption func(*connectConfig) error
 type connectConfig struct {
 	transportFactory       TransportFactory
 	transportDeviceFactory TransportFromDeviceFactory
+	deviceDetector         func(*detection.Options) ([]detection.DeviceInfo, error)
 	deviceOptions          []Option
 	timeout                time.Duration
 	autoDetect             bool
@@ -213,6 +214,14 @@ func WithConnectionRetries(maxAttempts int) ConnectOption {
 	}
 }
 
+// WithDeviceDetector sets a custom device detector function for auto-detection
+func WithDeviceDetector(detector func(*detection.Options) ([]detection.DeviceInfo, error)) ConnectOption {
+	return func(c *connectConfig) error {
+		c.deviceDetector = detector
+		return nil
+	}
+}
+
 // ConnectDevice creates and initializes a PN532 device from a path or auto-detection.
 // This is a high-level convenience function that handles transport creation, device
 // initialization, and optional validation setup.
@@ -246,7 +255,7 @@ func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 
 func createTransport(path string, config *connectConfig) (Transport, error) {
 	if config.autoDetect || path == "" {
-		return createAutoDetectedTransport(config.transportDeviceFactory)
+		return createAutoDetectedTransport(config.transportDeviceFactory, config.deviceDetector)
 	}
 	return createManualTransport(path, config.transportFactory)
 }
@@ -335,11 +344,22 @@ func createManualTransport(path string, factory TransportFactory) (Transport, er
 }
 
 // createAutoDetectedTransport handles auto-detection of devices
-func createAutoDetectedTransport(factory TransportFromDeviceFactory) (Transport, error) {
+func createAutoDetectedTransport(
+	factory TransportFromDeviceFactory,
+	detector func(*detection.Options) ([]detection.DeviceInfo, error),
+) (Transport, error) {
 	opts := detection.DefaultOptions()
 	opts.Mode = detection.Safe
 
-	devices, err := detection.DetectAll(&opts)
+	var devices []detection.DeviceInfo
+	var err error
+
+	if detector != nil {
+		devices, err = detector(&opts)
+	} else {
+		devices, err = detection.DetectAll(&opts)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %w", err)
 	}

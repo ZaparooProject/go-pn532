@@ -510,10 +510,23 @@ func TestConnectDevice_WithConnectionRetries(t *testing.T) {
 			return transport, nil
 		}
 
+		// Mock detector that returns a fake device
+		mockDetector := func(_ *detection.Options) ([]detection.DeviceInfo, error) {
+			return []detection.DeviceInfo{
+				{
+					Name:      "MockPN532",
+					Path:      "/dev/mock0",
+					Transport: "mock",
+					Metadata:  map[string]string{},
+				},
+			}, nil
+		}
+
 		// Use auto-detection mode (should bypass retry logic)
 		device, err := ConnectDevice("", // empty path triggers auto-detection
 			WithAutoDetection(),
 			WithTransportFromDeviceFactory(deviceFactory),
+			WithDeviceDetector(mockDetector),
 			WithConnectionRetries(5)) // This should be ignored for auto-detection
 
 		// Should fail immediately (no retries for auto-detection)
