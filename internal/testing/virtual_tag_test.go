@@ -26,7 +26,7 @@ import (
 
 // TestVirtualTagCreation tests the creation of different virtual tag types
 func TestVirtualTagCreation(t *testing.T) {
-	t.Parallel()
+
 
 	tests := []struct {
 		name           string
@@ -61,7 +61,7 @@ func TestVirtualTagCreation(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			tag := tt.createTag()
 			require.NotNil(t, tag)
@@ -76,7 +76,7 @@ func TestVirtualTagCreation(t *testing.T) {
 
 // TestVirtualTagCustomUID tests creation with custom UIDs
 func TestVirtualTagCustomUID(t *testing.T) {
-	t.Parallel()
+
 
 	customUID := []byte{0xAA, 0xBB, 0xCC, 0xDD}
 
@@ -101,7 +101,7 @@ func TestVirtualTagCustomUID(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			tag := tt.createTag(customUID)
 			require.NotNil(t, tag)
@@ -117,7 +117,7 @@ func TestVirtualTagCustomUID(t *testing.T) {
 
 // TestNDEFTextOperations tests NDEF text reading and writing
 func TestNDEFTextOperations(t *testing.T) {
-	t.Parallel()
+
 
 	tag := NewVirtualNTAG213(nil)
 	require.NotNil(t, tag)
@@ -169,7 +169,7 @@ func TestNDEFTextOperations(t *testing.T) {
 
 // TestNDEFParsingEdgeCases tests complex NDEF parsing scenarios
 func TestNDEFParsingEdgeCases(t *testing.T) {
-	t.Parallel()
+
 
 	tests := []struct {
 		name           string
@@ -262,7 +262,7 @@ func TestNDEFParsingEdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			tag := NewVirtualNTAG213(nil)
 			require.NotNil(t, tag)
@@ -279,7 +279,7 @@ func TestNDEFParsingEdgeCases(t *testing.T) {
 
 // TestVirtualTagMemoryLayout tests the memory initialization
 func TestVirtualTagMemoryLayout(t *testing.T) {
-	t.Parallel()
+
 
 	tests := []struct {
 		name      string
@@ -335,7 +335,7 @@ func TestVirtualTagMemoryLayout(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			tag := tt.createTag()
 			require.NotNil(t, tag)
@@ -347,7 +347,7 @@ func TestVirtualTagMemoryLayout(t *testing.T) {
 
 // TestGetUIDString tests the UID string conversion (currently unused but tested for completeness)
 func TestGetUIDString(t *testing.T) {
-	t.Parallel()
+
 
 	tests := []struct {
 		name        string
@@ -379,7 +379,7 @@ func TestGetUIDString(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			tag := NewVirtualNTAG213(tt.uid)
 			require.NotNil(t, tag)
@@ -392,7 +392,7 @@ func TestGetUIDString(t *testing.T) {
 
 // TestNDEFMessageSizeHandling tests NDEF message size limits
 func TestNDEFMessageSizeHandling(t *testing.T) {
-	t.Parallel()
+
 
 	tag := NewVirtualNTAG213(nil)
 	require.NotNil(t, tag)

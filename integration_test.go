@@ -29,7 +29,6 @@ import (
 
 // TestBasicTagDetection tests the complete workflow of detecting a tag
 func TestBasicTagDetection(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name    string
@@ -60,7 +59,7 @@ func TestBasicTagDetection(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			// Setup mock transport
 			mock := NewMockTransport()
@@ -107,7 +106,7 @@ func TestBasicTagDetection(t *testing.T) {
 
 // TestTagNotFound tests the scenario when no tag is present
 func TestTagNotFound(t *testing.T) {
-	t.Parallel()
+
 
 	// Setup mock transport
 	mock := NewMockTransport()
@@ -140,7 +139,7 @@ func TestTagNotFound(t *testing.T) {
 
 // TestTagReadWrite tests reading from and writing to a virtual tag
 func TestTagReadWrite(t *testing.T) {
-	t.Parallel()
+
 
 	// Create virtual NTAG213 tag
 	virtualTag := testutil.NewVirtualNTAG213(nil)
@@ -171,7 +170,7 @@ func TestTagReadWrite(t *testing.T) {
 
 // TestTransportErrorHandling tests error scenarios
 func TestTransportErrorHandling(t *testing.T) {
-	t.Parallel()
+
 
 	// Setup mock transport with error injection
 	mock := NewMockTransport()
@@ -206,7 +205,7 @@ func TestTransportErrorHandling(t *testing.T) {
 
 // TestTransportTimeout tests timeout scenarios
 func TestTransportTimeout(t *testing.T) {
-	t.Parallel()
+
 
 	// Setup mock transport with delay
 	mock := NewMockTransport()
@@ -243,7 +242,7 @@ func TestTransportTimeout(t *testing.T) {
 
 // TestTagRemoval tests tag removal scenarios
 func TestTagRemoval(t *testing.T) {
-	t.Parallel()
+
 
 	// Create virtual tag and test removal
 	virtualTag := testutil.NewVirtualNTAG213(nil)
@@ -300,7 +299,7 @@ func BenchmarkTagDetection(b *testing.B) {
 
 // TestMIFAREVirtualTagReadWrite tests the MIFARE virtual tag implementations
 func TestMIFAREVirtualTagReadWrite(t *testing.T) {
-	t.Parallel()
+
 
 	tests := []struct {
 		name        string
@@ -323,7 +322,7 @@ func TestMIFAREVirtualTagReadWrite(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			// Create virtual tag
 			virtualTag := tt.createTag()
@@ -396,7 +395,7 @@ func TestMIFAREVirtualTagReadWrite(t *testing.T) {
 
 // TestMIFAREWriteProtection tests write protection on sector trailers
 func TestMIFAREWriteProtection(t *testing.T) {
-	t.Parallel()
+
 
 	tests := []struct {
 		name              string
@@ -421,7 +420,7 @@ func TestMIFAREWriteProtection(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+
 
 			virtualTag := tt.createTag()
 			require.NotNil(t, virtualTag)
