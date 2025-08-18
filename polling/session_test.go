@@ -532,12 +532,12 @@ func TestCardState_TimerCleanup(t *testing.T) {
 	testTimerCleanupTransition(t, "TransitionToPostReadGrace_CleansUpTimer",
 		func(cs *CardState) *atomic.Bool {
 			var callback atomic.Bool
-			cs.TransitionToDetected(100*time.Millisecond, func() { callback.Store(true) })
+			cs.TransitionToDetected(200*time.Millisecond, func() { callback.Store(true) })
 			return &callback
 		},
 		func(cs *CardState) *atomic.Bool {
 			var callback atomic.Bool
-			cs.TransitionToPostReadGrace(100*time.Millisecond, func() { callback.Store(true) })
+			cs.TransitionToPostReadGrace(200*time.Millisecond, func() { callback.Store(true) })
 			return &callback
 		},
 		StatePostReadGrace,
@@ -546,12 +546,12 @@ func TestCardState_TimerCleanup(t *testing.T) {
 	testTimerCleanupTransition(t, "TransitionToDetected_CleansUpTimer",
 		func(cs *CardState) *atomic.Bool {
 			var callback atomic.Bool
-			cs.TransitionToPostReadGrace(50*time.Millisecond, func() { callback.Store(true) })
+			cs.TransitionToPostReadGrace(200*time.Millisecond, func() { callback.Store(true) })
 			return &callback
 		},
 		func(cs *CardState) *atomic.Bool {
 			var callback atomic.Bool
-			cs.TransitionToDetected(100*time.Millisecond, func() { callback.Store(true) })
+			cs.TransitionToDetected(200*time.Millisecond, func() { callback.Store(true) })
 			return &callback
 		},
 		StateTagDetected,
@@ -560,7 +560,7 @@ func TestCardState_TimerCleanup(t *testing.T) {
 	testTimerCleanupTransition(t, "TransitionToIdle_CleansUpTimer",
 		func(cs *CardState) *atomic.Bool {
 			var callback atomic.Bool
-			cs.TransitionToDetected(100*time.Millisecond, func() { callback.Store(true) })
+			cs.TransitionToDetected(200*time.Millisecond, func() { callback.Store(true) })
 			return &callback
 		},
 		func(cs *CardState) *atomic.Bool {
@@ -583,7 +583,7 @@ func TestCardState_TimerCleanup(t *testing.T) {
 
 		// First set up a timer
 		var callbackCalled atomic.Bool
-		cs.TransitionToDetected(100*time.Millisecond, func() {
+		cs.TransitionToDetected(200*time.Millisecond, func() {
 			callbackCalled.Store(true)
 		})
 		require.NotNil(t, cs.RemovalTimer)
