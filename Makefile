@@ -15,6 +15,15 @@ PKG ?= ./...
 TDDGUARD_AVAILABLE := $(shell command -v tdd-guard-go 2> /dev/null)
 PROJECT_ROOT := $(PWD)
 
+# Race flag setup - race detector requires CGO, so disable for cross-compilation
+ifeq ($(GOOS),)
+	# Native build - use race detection
+	RACE_FLAG = -race
+else
+	# Cross-compilation - skip race detection (requires CGO)
+	RACE_FLAG = 
+endif
+
 # Conditional test command - pipes through tdd-guard-go if available
 ifdef TDDGUARD_AVAILABLE
 	GOTEST_WITH_TDD = $(GOTEST) -json $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
@@ -45,9 +54,9 @@ test-unit:
 	@echo "Running unit tests on $(PKG)..."
 ifdef TDDGUARD_AVAILABLE
 	@echo "TDD Guard detected - integrating test reporting..."
-	$(GOTEST) -json -v -race -coverprofile=coverage-unit.txt -covermode=atomic $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+	$(GOTEST) -json -v $(RACE_FLAG) -coverprofile=coverage-unit.txt -covermode=atomic $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
 else
-	$(GOTEST) -v -race -coverprofile=coverage-unit.txt -covermode=atomic $(PKG)
+	$(GOTEST) -v $(RACE_FLAG) -coverprofile=coverage-unit.txt -covermode=atomic $(PKG)
 endif
 
 # Run integration tests only
@@ -55,9 +64,9 @@ test-integration:
 	@echo "Running integration tests on $(PKG)..."
 ifdef TDDGUARD_AVAILABLE
 	@echo "TDD Guard detected - integrating test reporting..."
-	$(GOTEST) -json -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+	$(GOTEST) -json -v $(RACE_FLAG) -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
 else
-	$(GOTEST) -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic $(PKG)
+	$(GOTEST) -v $(RACE_FLAG) -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic $(PKG)
 endif
 
 # Run unit tests with coverage report
