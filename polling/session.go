@@ -190,9 +190,53 @@ func (s *Session) pauseWithAck(_ context.Context) error {
 
 // WriteToNextTag waits for the next tag detection and performs a write operation
 // This method blocks until a tag is detected or timeout occurs
-func (*Session) WriteToNextTag(_ context.Context, _ time.Duration, _ func(pn532.Tag) error) error {
-	// Temporary stub to fix build failure
-	return errors.New("WriteToNextTag not implemented yet")
+func (s *Session) WriteToNextTag(ctx context.Context, timeout time.Duration, writeFn func(pn532.Tag) error) error {
+	// Acquire write mutex to prevent concurrent writes
+	s.writeMutex.Lock()
+	defer s.writeMutex.Unlock()
+
+	// Pause polling to prevent interference with our write operation
+	if err := s.pauseWithAck(ctx); err != nil {
+		return fmt.Errorf("failed to pause polling: %w", err)
+	}
+	defer s.Resume()
+
+	// Create a timeout context for the polling loop
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Poll continuously until we find a tag or timeout
+	ticker := time.NewTicker(s.config.PollInterval)
+	defer ticker.Stop()
+
+	for {
+		// Attempt to detect a tag
+		detectedTag, err := s.performSinglePoll(timeoutCtx)
+		if err == nil {
+			// Tag found - create Tag object and call write function
+			tag, tagErr := s.device.CreateTag(detectedTag)
+			if tagErr != nil {
+				return fmt.Errorf("failed to create tag: %w", tagErr)
+			}
+			return writeFn(tag)
+		}
+
+		if !errors.Is(err, ErrNoTagInPoll) {
+			// Real error occurred
+			return fmt.Errorf("tag detection failed: %w", err)
+		}
+
+		// Wait for next poll interval or timeout
+		select {
+		case <-ticker.C:
+			continue
+		case <-timeoutCtx.Done():
+			if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+				return errors.New("timeout waiting for tag")
+			}
+			return timeoutCtx.Err()
+		}
+	}
 }
 
 // WriteToTag performs a thread-safe write operation to a detected tag

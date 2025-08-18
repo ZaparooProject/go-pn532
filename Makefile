@@ -1,9 +1,15 @@
-.PHONY: all build test test-unit test-integration lint lint-fix clean coverage coverage-unit coverage-integration check help nfctest readtag tdd
+.PHONY: all build test test-unit test-integration lint lint-fix clean coverage coverage-unit coverage-integration check help nfctest readtag reader tdd
 
 # Go parameters
 GOCMD=go
 GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
+
+# Package parameter for targeting specific directories
+# Usage: make test PKG=./polling
+# Usage: make test-unit PKG=./polling/...
+# Usage: make test PKG=./cmd/nfctest
+PKG ?= ./...
 
 # TDD Guard detection and setup
 TDDGUARD_AVAILABLE := $(shell command -v tdd-guard-go 2> /dev/null)
@@ -11,9 +17,9 @@ PROJECT_ROOT := $(PWD)
 
 # Conditional test command - pipes through tdd-guard-go if available
 ifdef TDDGUARD_AVAILABLE
-	GOTEST_WITH_TDD = $(GOTEST) -json ./... 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+	GOTEST_WITH_TDD = $(GOTEST) -json $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
 else
-	GOTEST_WITH_TDD = $(GOTEST)
+	GOTEST_WITH_TDD = $(GOTEST) $(PKG)
 endif
 
 # Default target
@@ -34,28 +40,33 @@ readtag:
 	@echo "Building readtag..."
 	$(GOBUILD) -o cmd/readtag/readtag ./cmd/readtag
 
+# Build reader binary
+reader:
+	@echo "Building reader..."
+	$(GOBUILD) -o cmd/reader/reader ./cmd/reader
+
 # Run all tests (unit + integration)
 test: test-unit test-integration
 	@echo "All tests completed!"
 
 # Run unit tests only
 test-unit:
-	@echo "Running unit tests..."
+	@echo "Running unit tests on $(PKG)..."
 ifdef TDDGUARD_AVAILABLE
 	@echo "TDD Guard detected - integrating test reporting..."
-	$(GOTEST) -json -v -race -coverprofile=coverage-unit.txt -covermode=atomic ./... 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+	$(GOTEST) -json -v -race -coverprofile=coverage-unit.txt -covermode=atomic $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
 else
-	$(GOTEST) -v -race -coverprofile=coverage-unit.txt -covermode=atomic ./...
+	$(GOTEST) -v -race -coverprofile=coverage-unit.txt -covermode=atomic $(PKG)
 endif
 
 # Run integration tests only
 test-integration:
-	@echo "Running integration tests..."
+	@echo "Running integration tests on $(PKG)..."
 ifdef TDDGUARD_AVAILABLE
 	@echo "TDD Guard detected - integrating test reporting..."
-	$(GOTEST) -json -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic ./... 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
+	$(GOTEST) -json -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic $(PKG) 2>&1 | tdd-guard-go -project-root $(PROJECT_ROOT)
 else
-	$(GOTEST) -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic ./...
+	$(GOTEST) -v -race -tags=integration -coverprofile=coverage-integration.txt -covermode=atomic $(PKG)
 endif
 
 # Run unit tests with coverage report
@@ -88,8 +99,8 @@ lint-fix:
 
 # Run benchmarks
 bench:
-	@echo "Running benchmarks..."
-	$(GOTEST) -bench=. -benchmem ./...
+	@echo "Running benchmarks on $(PKG)..."
+	$(GOTEST) -bench=. -benchmem $(PKG)
 
 # Clean build artifacts
 clean:
@@ -97,7 +108,7 @@ clean:
 	$(GOCMD) clean
 	rm -f coverage*.txt coverage*.html
 	rm -rf bin/ dist/ build/
-	rm -f cmd/nfctest/nfctest cmd/readtag/readtag
+	rm -f cmd/nfctest/nfctest cmd/readtag/readtag cmd/reader/reader
 
 # Quick check before committing
 check: lint test
@@ -113,9 +124,11 @@ help:
 	@echo "  build               - Build all packages"
 	@echo "  nfctest             - Build nfctest binary to cmd/nfctest/"
 	@echo "  readtag             - Build readtag binary to cmd/readtag/"
+	@echo "  reader              - Build reader binary to cmd/reader/"
 	@echo "  test                - Run all tests (unit + integration)"
 	@echo "  test-unit           - Run unit tests only"
 	@echo "  test-integration    - Run integration tests only"
+	@echo "  bench               - Run benchmarks"
 	@echo "  coverage            - Generate all HTML coverage reports"
 	@echo "  coverage-unit       - Generate unit test coverage report"
 	@echo "  coverage-integration - Generate integration test coverage report"
@@ -124,5 +137,16 @@ help:
 	@echo "  clean               - Remove build artifacts and coverage files"
 	@echo "  check               - Run lint and test (pre-commit check)"
 	@echo "  help                - Show this help message"
+	@echo ""
+	@echo "Package targeting (PKG parameter):"
+	@echo "  PKG=./...           - Test all packages (default)"
+	@echo "  PKG=./polling       - Test specific package"
+	@echo "  PKG=./polling/...   - Test package and subpackages"
+	@echo "  PKG=./cmd/nfctest   - Test specific command package"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make test PKG=./polling               - Test polling package only"
+	@echo "  make test-unit PKG=./cmd/nfctest      - Unit tests for nfctest only"
+	@echo "  make bench PKG=./transport            - Benchmark transport package"
 	@echo ""
 	@echo "Note: Test commands automatically integrate with tdd-guard-go if available"

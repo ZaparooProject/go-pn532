@@ -602,6 +602,61 @@ func TestCardState_TimerCleanup(t *testing.T) {
 	})
 }
 
+func TestSession_WriteToNextTag(t *testing.T) {
+	t.Parallel()
+
+	t.Run("SuccessfulWriteToNextTag", func(t *testing.T) {
+		t.Parallel()
+		device, mockTransport := createMockDeviceWithTransport(t)
+		session := NewSession(device, nil)
+
+		// Setup mock responses for polling and tag operations
+		// InListPassiveTarget with tag
+		mockTransport.SetResponse(0x4A, []byte{
+			0x4B, 0x01, 0x01, 0x00, 0x04, 0x08, 0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+		})
+		mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response
+		mockTransport.SetResponse(0x40, []byte{0x41, 0x00}) // DataExchange response
+
+		writeCallCount := 0
+		err := session.WriteToNextTag(context.Background(), 5*time.Second, func(tag pn532.Tag) error {
+			writeCallCount++
+			// Validate we got a real tag, not nil
+			require.NotNil(t, tag, "WriteToNextTag should pass a non-nil Tag object")
+			require.NotEmpty(t, tag.UID(), "Tag should have a valid UID")
+			return nil
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, writeCallCount)
+		assert.False(t, session.isPaused.Load()) // Should be resumed after write
+	})
+
+	t.Run("TimeoutWaitingForTag", func(t *testing.T) {
+		t.Parallel()
+		device, mockTransport := createMockDeviceWithTransport(t)
+		session := NewSession(device, nil)
+
+		// Setup mock to return no tags - should be called multiple times during polling
+		mockTransport.SetResponse(0x4A, []byte{0x4B, 0x00}) // InListPassiveTarget with no tags
+
+		start := time.Now()
+		timeout := 150 * time.Millisecond
+		err := session.WriteToNextTag(context.Background(), timeout, func(_ pn532.Tag) error {
+			t.Fatal("Write function should not be called")
+			return nil
+		})
+
+		elapsed := time.Since(start)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "timeout waiting for tag")
+		assert.False(t, session.isPaused.Load()) // Should be resumed even on timeout
+
+		// Should have actually waited close to the timeout duration (polling continuously)
+		assert.GreaterOrEqual(t, elapsed, timeout-20*time.Millisecond, "Should wait approximately the timeout duration")
+	})
+}
+
 // TestSafeTimerStop tests the safeTimerStop helper function that should eliminate duplication
 func TestSafeTimerStop(t *testing.T) {
 	t.Parallel()

@@ -33,6 +33,9 @@ type Transport interface {
 	// SendCommand sends a command to the PN532 and waits for response
 	SendCommand(cmd byte, args []byte) ([]byte, error)
 
+	// SendCommandWithContext sends a command to the PN532 with context support
+	SendCommandWithContext(ctx context.Context, cmd byte, args []byte) ([]byte, error)
+
 	// Close closes the transport connection
 	Close() error
 
@@ -116,6 +119,26 @@ func (t *TransportWithRetry) SendCommand(cmd byte, args []byte) ([]byte, error) 
 	return result, err
 }
 
+// SendCommandWithContext sends a command with context support and retry logic
+func (t *TransportWithRetry) SendCommandWithContext(ctx context.Context, cmd byte, args []byte) ([]byte, error) {
+	var result []byte
+	err := RetryWithConfig(ctx, t.config, func() error {
+		var err error
+		result, err = t.transport.SendCommandWithContext(ctx, cmd, args)
+		if err != nil {
+			// Wrap transport errors for better error handling
+			return &TransportError{
+				Op:        "SendCommandWithContext",
+				Err:       err,
+				Type:      GetErrorType(err),
+				Retryable: IsRetryable(err),
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
 // Close closes the transport connection
 func (t *TransportWithRetry) Close() error {
 	if err := t.transport.Close(); err != nil {
@@ -189,6 +212,45 @@ func (m *MockTransport) SendCommand(cmd byte, _ []byte) ([]byte, error) {
 	// Simulate hardware delay if configured
 	if m.delay > 0 {
 		time.Sleep(m.delay)
+	}
+
+	// Check for injected error
+	if err, exists := m.errorMap[cmd]; exists {
+		return nil, err
+	}
+
+	// Return configured response
+	if response, exists := m.responses[cmd]; exists {
+		return response, nil
+	}
+
+	// Default response for unknown commands
+	return []byte{0xD5, cmd + 1, 0x00}, nil // Basic ACK response
+}
+
+// SendCommandWithContext implements Transport interface with context support
+func (m *MockTransport) SendCommandWithContext(ctx context.Context, cmd byte, _ []byte) ([]byte, error) {
+	if !m.connected {
+		return nil, errors.New("transport not connected")
+	}
+
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Track call count
+	m.callCount[cmd]++
+
+	// Simulate hardware delay if configured with context awareness
+	if m.delay > 0 {
+		select {
+		case <-time.After(m.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	// Check for injected error
