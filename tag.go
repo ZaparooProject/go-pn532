@@ -21,6 +21,7 @@
 package pn532
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -65,6 +66,9 @@ type Tag interface {
 
 	// WriteNDEF writes NDEF data to the tag
 	WriteNDEF(message *NDEFMessage) error
+
+	// WriteNDEFWithContext writes NDEF data to the tag with context support
+	WriteNDEFWithContext(ctx context.Context, message *NDEFMessage) error
 
 	// ReadText reads the first text record from the tag's NDEF data
 	ReadText() (string, error)
@@ -130,6 +134,12 @@ func (*BaseTag) ReadNDEF() (*NDEFMessage, error) {
 // WriteNDEF provides a default implementation that returns an error
 // Specific tag types should override this method
 func (*BaseTag) WriteNDEF(_ *NDEFMessage) error {
+	return ErrNotImplemented
+}
+
+// WriteNDEFWithContext provides a default implementation that returns an error
+// Specific tag types should override this method
+func (*BaseTag) WriteNDEFWithContext(_ context.Context, _ *NDEFMessage) error {
 	return ErrNotImplemented
 }
 

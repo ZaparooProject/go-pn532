@@ -21,6 +21,7 @@
 package pn532
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -375,6 +376,12 @@ func (f *FeliCaTag) WriteNDEF(message *NDEFMessage) error {
 	defer f.restoreSystemCodes(originalSystemCode, originalServiceCode)
 
 	return f.executeNDEFWrite(message)
+}
+
+// WriteNDEFWithContext writes NDEF data to the FeliCa tag with context support
+func (f *FeliCaTag) WriteNDEFWithContext(_ context.Context, message *NDEFMessage) error {
+	// TODO: Add context cancellation checks at appropriate points during the write operation
+	return f.WriteNDEF(message)
 }
 
 // restoreSystemCodes restores the original system and service codes

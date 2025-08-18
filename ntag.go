@@ -22,6 +22,7 @@ package pn532
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -423,6 +424,40 @@ func (t *NTAGTag) WriteNDEF(message *NDEFMessage) error {
 	return t.writeDataToBlocks(data, userStart, userEnd)
 }
 
+// WriteNDEFWithContext writes NDEF data to the NTAG tag with context support
+func (t *NTAGTag) WriteNDEFWithContext(ctx context.Context, message *NDEFMessage) error {
+	if len(message.Records) == 0 {
+		return errors.New("no NDEF records to write")
+	}
+
+	// Check context cancellation before starting
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	data, err := BuildNDEFMessageEx(message.Records)
+	if err != nil {
+		return fmt.Errorf("failed to build NDEF message: %w", err)
+	}
+
+	// Check context cancellation after building message
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	userStart, userEnd, err := t.validateAndGetMemoryRange(data)
+	if err != nil {
+		return err
+	}
+
+	// Check context cancellation before starting block writes
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	return t.writeDataToBlocksWithContext(ctx, data, userStart, userEnd)
+}
+
 func (t *NTAGTag) validateAndGetMemoryRange(data []byte) (userStart, userEnd uint8, err error) {
 	userStart, userEnd = t.GetUserMemoryRange()
 	maxBytes := int(userEnd-userStart+1) * ntagBlockSize
@@ -449,6 +484,28 @@ func (t *NTAGTag) validateAndGetMemoryRange(data []byte) (userStart, userEnd uin
 func (t *NTAGTag) writeDataToBlocks(data []byte, userStart, userEnd uint8) error {
 	block := userStart
 	for i := 0; i < len(data); i += ntagBlockSize {
+		if block > userEnd {
+			return errors.New("NDEF data exceeds tag memory capacity")
+		}
+
+		blockData := t.prepareBlockData(data, i)
+		if err := t.WriteBlock(block, blockData); err != nil {
+			return fmt.Errorf("failed to write block %d: %w", block, err)
+		}
+		block++
+	}
+	return nil
+}
+
+// writeDataToBlocksWithContext writes data to NTAG blocks with context cancellation support
+func (t *NTAGTag) writeDataToBlocksWithContext(ctx context.Context, data []byte, userStart, userEnd uint8) error {
+	block := userStart
+	for i := 0; i < len(data); i += ntagBlockSize {
+		// Check for context cancellation before each block write
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+
 		if block > userEnd {
 			return errors.New("NDEF data exceeds tag memory capacity")
 		}

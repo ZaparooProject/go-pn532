@@ -619,13 +619,14 @@ func TestSession_WriteToNextTag(t *testing.T) {
 		mockTransport.SetResponse(0x40, []byte{0x41, 0x00}) // DataExchange response
 
 		writeCallCount := 0
-		err := session.WriteToNextTag(context.Background(), 5*time.Second, func(tag pn532.Tag) error {
-			writeCallCount++
-			// Validate we got a real tag, not nil
-			require.NotNil(t, tag, "WriteToNextTag should pass a non-nil Tag object")
-			require.NotEmpty(t, tag.UID(), "Tag should have a valid UID")
-			return nil
-		})
+		err := session.WriteToNextTag(
+			context.Background(), 5*time.Second, func(_ context.Context, tag pn532.Tag) error {
+				writeCallCount++
+				// Validate we got a real tag, not nil
+				require.NotNil(t, tag, "WriteToNextTag should pass a non-nil Tag object")
+				require.NotEmpty(t, tag.UID(), "Tag should have a valid UID")
+				return nil
+			})
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, writeCallCount)
@@ -642,7 +643,7 @@ func TestSession_WriteToNextTag(t *testing.T) {
 
 		start := time.Now()
 		timeout := 150 * time.Millisecond
-		err := session.WriteToNextTag(context.Background(), timeout, func(_ pn532.Tag) error {
+		err := session.WriteToNextTag(context.Background(), timeout, func(_ context.Context, _ pn532.Tag) error {
 			t.Fatal("Write function should not be called")
 			return nil
 		})

@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZaparooProject/go-pn532/detection"
 	testutil "github.com/ZaparooProject/go-pn532/internal/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -402,4 +403,125 @@ func TestDevice_IsAutoPollSupported(t *testing.T) {
 	supported := device.IsAutoPollSupported()
 	// The result depends on the mock implementation's HasCapability method
 	assert.IsType(t, true, supported) // Just verify it returns a boolean
+}
+
+func TestWithConnectionRetries_Option(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		retries     int
+		expectError bool
+	}{
+		{
+			name:        "Valid_Retry_Count",
+			retries:     3,
+			expectError: false,
+		},
+		{
+			name:        "Single_Attempt",
+			retries:     1,
+			expectError: false,
+		},
+		{
+			name:        "Zero_Retries_Invalid",
+			retries:     0,
+			expectError: true,
+		},
+		{
+			name:        "Negative_Retries_Invalid",
+			retries:     -1,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Test the option by applying it to a config
+			config := &connectConfig{}
+			option := WithConnectionRetries(tt.retries)
+			err := option(config)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.retries, config.connectionRetries)
+			}
+		})
+	}
+}
+
+// setupFailingTransport creates a mock transport that fails SAM configuration
+func setupFailingTransport() Transport {
+	mock := NewMockTransport()
+	// Set up successful firmware version response
+	mock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
+	// Always fail SAM configuration with a retryable error to demonstrate retry behavior
+	mock.SetError(testutil.CmdSAMConfiguration, ErrCommunicationFailed)
+	return mock
+}
+
+// verifyRetryAttemptsForFailure checks that the expected number of retry attempts were made for failed connections
+func verifyRetryAttemptsForFailure(t *testing.T, transport Transport, expectedMinCalls int) {
+	if mock, ok := transport.(*MockTransport); ok {
+		samAttempts := mock.GetCallCount(testutil.CmdSAMConfiguration)
+		// For failed connection, should have been retried, so expect multiple calls
+		assert.GreaterOrEqual(t, samAttempts, expectedMinCalls,
+			"Expected at least %d SAM configuration calls indicating retry attempts", expectedMinCalls)
+	}
+}
+
+func TestConnectDevice_WithConnectionRetries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Failure_Should_Retry_Before_Giving_Up", func(t *testing.T) {
+		t.Parallel()
+
+		transport := setupFailingTransport()
+
+		// Create a factory that returns our pre-configured transport
+		factory := func(_ string) (Transport, error) {
+			return transport, nil
+		}
+
+		// Use ConnectDevice with retry configuration
+		device, err := ConnectDevice("/mock/path",
+			WithTransportFactory(factory),
+			WithConnectionRetries(3))
+
+		// Should fail after retries
+		require.Error(t, err, "Expected connection to fail after all retries")
+		assert.Nil(t, device)
+
+		// Verify the number of retry attempts made (should see at least 2 SAM config calls)
+		verifyRetryAttemptsForFailure(t, transport, 2)
+	})
+
+	t.Run("AutoDetection_Bypasses_Retry_Logic", func(t *testing.T) {
+		t.Parallel()
+
+		transport := setupFailingTransport()
+
+		// Mock the detection to return our failing transport
+		deviceFactory := func(_ detection.DeviceInfo) (Transport, error) {
+			return transport, nil
+		}
+
+		// Use auto-detection mode (should bypass retry logic)
+		device, err := ConnectDevice("", // empty path triggers auto-detection
+			WithAutoDetection(),
+			WithTransportFromDeviceFactory(deviceFactory),
+			WithConnectionRetries(5)) // This should be ignored for auto-detection
+
+		// Should fail immediately (no retries for auto-detection)
+		require.Error(t, err, "Expected immediate failure for auto-detection")
+		assert.Nil(t, device)
+
+		// Verify only single attempt was made (no retries)
+		samAttempts := transport.(*MockTransport).GetCallCount(testutil.CmdSAMConfiguration)
+		assert.Equal(t, 1, samAttempts, "Auto-detection should only make single attempt")
+	})
 }

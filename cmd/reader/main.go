@@ -162,7 +162,7 @@ func connectToDevice(ctx context.Context, cfg *config) (*pn532.Device, error) {
 	return device, nil
 }
 
-func runReadMode(ctx context.Context, device *pn532.Device, cfg *config) error {
+func runReadMode(ctx context.Context, device *pn532.Device, _ *config) error {
 	// Create session with default configuration
 	sessionConfig := polling.DefaultConfig()
 	session := polling.NewSession(device, sessionConfig)
@@ -194,9 +194,7 @@ func runReadMode(ctx context.Context, device *pn532.Device, cfg *config) error {
 
 	// Set up tag removal callback
 	session.OnCardRemoved = func() {
-		if cfg.debug {
-			_, _ = fmt.Println("Tag removed - ready for next tag...")
-		}
+		_, _ = fmt.Println("Tag removed - ready for next tag...")
 	}
 
 	// Start the session in a goroutine to allow for immediate cancellation
@@ -249,7 +247,7 @@ func runWriteMode(ctx context.Context, device *pn532.Device, cfg *config) error 
 	var writeSuccess bool
 
 	// Use WriteToNextTag to wait for a tag and write to it
-	err := session.WriteToNextTag(ctx, timeout, func(tag pn532.Tag) error {
+	err := session.WriteToNextTag(ctx, timeout, func(ctx context.Context, tag pn532.Tag) error {
 		_, _ = fmt.Println("Tag detected! Writing text...")
 
 		// Create NDEF message with text record
@@ -262,8 +260,8 @@ func runWriteMode(ctx context.Context, device *pn532.Device, cfg *config) error 
 			},
 		}
 
-		// Write the NDEF message to the tag
-		if err := tag.WriteNDEF(message); err != nil {
+		// Write the NDEF message to the tag with context support
+		if err := tag.WriteNDEFWithContext(ctx, message); err != nil {
 			writeResult = fmt.Errorf("failed to write NDEF message: %w", err)
 			return writeResult
 		}
@@ -284,7 +282,7 @@ func runWriteMode(ctx context.Context, device *pn532.Device, cfg *config) error 
 	}
 
 	if writeSuccess {
-		_, _ = fmt.Printf("✓ Successfully wrote text to tag: %q\n", cfg.writeText)
+		_, _ = fmt.Printf("Successfully wrote text to tag: %q\n", cfg.writeText)
 	} else {
 		_, _ = fmt.Println("Write operation completed but no write confirmation received.")
 	}

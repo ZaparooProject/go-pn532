@@ -216,7 +216,7 @@ func handleWriteMode(
 ) error {
 	_, _ = fmt.Println("Waiting for tag to write...")
 
-	err := session.WriteToNextTag(ctx, timeout, func(tag pn532.Tag) error {
+	err := session.WriteToNextTag(ctx, timeout, func(_ context.Context, tag pn532.Tag) error {
 		// Write the text to the tag
 		if err := writeTextIfRequested(tag, writeText); err != nil {
 			return err

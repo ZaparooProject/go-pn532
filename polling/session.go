@@ -190,7 +190,9 @@ func (s *Session) pauseWithAck(_ context.Context) error {
 
 // WriteToNextTag waits for the next tag detection and performs a write operation
 // This method blocks until a tag is detected or timeout occurs
-func (s *Session) WriteToNextTag(ctx context.Context, timeout time.Duration, writeFn func(pn532.Tag) error) error {
+func (s *Session) WriteToNextTag(
+	ctx context.Context, timeout time.Duration, writeFn func(context.Context, pn532.Tag) error,
+) error {
 	// Acquire write mutex to prevent concurrent writes
 	s.writeMutex.Lock()
 	defer s.writeMutex.Unlock()
@@ -218,7 +220,7 @@ func (s *Session) WriteToNextTag(ctx context.Context, timeout time.Duration, wri
 			if tagErr != nil {
 				return fmt.Errorf("failed to create tag: %w", tagErr)
 			}
-			return writeFn(tag)
+			return writeFn(timeoutCtx, tag)
 		}
 
 		if !errors.Is(err, ErrNoTagInPoll) {
