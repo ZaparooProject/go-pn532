@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit test-integration lint lint-fix clean coverage coverage-unit coverage-integration check help nfctest readtag reader tdd
+.PHONY: all build test test-unit test-integration lint lint-fix clean coverage coverage-unit coverage-integration check help reader tdd
 
 # Go parameters
 GOCMD=go
@@ -8,7 +8,7 @@ GOTEST=$(GOCMD) test
 # Package parameter for targeting specific directories
 # Usage: make test PKG=./polling
 # Usage: make test-unit PKG=./polling/...
-# Usage: make test PKG=./cmd/nfctest
+# Usage: make test PKG=./cmd/reader
 PKG ?= ./...
 
 # TDD Guard detection and setup
@@ -30,15 +30,6 @@ build:
 	@echo "Building packages..."
 	$(GOBUILD) -v ./...
 
-# Build nfctest binary
-nfctest:
-	@echo "Building nfctest..."
-	$(GOBUILD) -o cmd/nfctest/nfctest ./cmd/nfctest
-
-# Build readtag binary
-readtag:
-	@echo "Building readtag..."
-	$(GOBUILD) -o cmd/readtag/readtag ./cmd/readtag
 
 # Build reader binary
 reader:
@@ -108,7 +99,7 @@ clean:
 	$(GOCMD) clean
 	rm -f coverage*.txt coverage*.html
 	rm -rf bin/ dist/ build/
-	rm -f cmd/nfctest/nfctest cmd/readtag/readtag cmd/reader/reader
+	rm -f cmd/reader/reader
 
 # Quick check before committing
 check: lint test
@@ -122,8 +113,6 @@ help:
 	@echo "Available targets:"
 	@echo "  all                 - Lint, test, and build (default)"
 	@echo "  build               - Build all packages"
-	@echo "  nfctest             - Build nfctest binary to cmd/nfctest/"
-	@echo "  readtag             - Build readtag binary to cmd/readtag/"
 	@echo "  reader              - Build reader binary to cmd/reader/"
 	@echo "  test                - Run all tests (unit + integration)"
 	@echo "  test-unit           - Run unit tests only"
@@ -142,11 +131,11 @@ help:
 	@echo "  PKG=./...           - Test all packages (default)"
 	@echo "  PKG=./polling       - Test specific package"
 	@echo "  PKG=./polling/...   - Test package and subpackages"
-	@echo "  PKG=./cmd/nfctest   - Test specific command package"
+	@echo "  PKG=./cmd/reader    - Test specific command package"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make test PKG=./polling               - Test polling package only"
-	@echo "  make test-unit PKG=./cmd/nfctest      - Unit tests for nfctest only"
+	@echo "  make test-unit PKG=./cmd/reader       - Unit tests for reader only"
 	@echo "  make bench PKG=./transport            - Benchmark transport package"
 	@echo ""
 	@echo "Note: Test commands automatically integrate with tdd-guard-go if available"

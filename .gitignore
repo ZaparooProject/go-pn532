@@ -34,8 +34,6 @@ Thumbs.db
 /build/
 /bin/
 
-cmd/*/readtag
-cmd/*/nfctest
 cmd/*/*
 !cmd/*/*.go
 !cmd/*/*.md
