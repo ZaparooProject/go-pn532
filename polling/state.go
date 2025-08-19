@@ -53,11 +53,17 @@ var ErrNoTagInPoll = errors.New("no tag detected in polling cycle")
 // safeTimerStop safely stops a timer and drains its channel to prevent resource leaks
 func safeTimerStop(timer *time.Timer) {
 	if timer != nil {
-		timer.Stop()
-		// Drain timer channel if the timer didn't fire to prevent resource leaks
-		select {
-		case <-timer.C:
-		default:
+		// Stop the timer first
+		stopped := timer.Stop()
+		// If Stop() returned false, the timer already fired and the value was sent to C
+		// In that case, we need to drain the channel to prevent blocking
+		if !stopped {
+			select {
+			case <-timer.C:
+				// Timer fired, drained the channel
+			default:
+				// Timer was already drained or never fired
+			}
 		}
 	}
 }

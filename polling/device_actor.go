@@ -58,6 +58,8 @@ type DeviceActor struct {
 	// Adaptive polling state
 	currentInterval   int64 // Current polling interval in nanoseconds
 	lastCardDetection int64 // Timestamp of last card detection
+	// Running state to prevent multiple goroutines
+	running int64 // 0 = stopped, 1 = running
 }
 
 // NewDeviceActor creates a new device actor (minimal implementation to pass test)
@@ -75,15 +77,22 @@ func NewDeviceActor(device *pn532.Device, config *Config, callbacks DeviceCallba
 
 // Start minimal implementation to pass test
 func (da *DeviceActor) Start(_ context.Context) error {
-	// Start continuous polling in a goroutine
-	go da.pollLoop()
+	// Only start if not already running
+	if atomic.CompareAndSwapInt64(&da.running, 0, 1) {
+		// Start continuous polling in a goroutine
+		go da.pollLoop()
+	}
 	return nil
 }
 
 // pollLoop runs continuous polling until stopped
 func (da *DeviceActor) pollLoop() {
 	ticker := time.NewTicker(da.config.PollInterval)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		// Mark as not running when goroutine exits
+		atomic.StoreInt64(&da.running, 0)
+	}()
 
 	for {
 		select {
@@ -144,8 +153,14 @@ func (da *DeviceActor) adjustPollInterval() {
 	}
 }
 
-// Stop minimal implementation to pass test
-func (*DeviceActor) Stop(_ context.Context) error {
+// Stop stops the device actor and waits for the polling goroutine to exit
+func (da *DeviceActor) Stop(_ context.Context) error {
+	select {
+	case da.stopChan <- struct{}{}:
+		// Successfully signaled stop
+	default:
+		// Channel might be closed or goroutine already stopped
+	}
 	return nil
 }
 
