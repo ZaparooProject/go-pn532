@@ -1,0 +1,37 @@
+# Lefthook configuration for go-pn532
+# Ensures all lints pass before commits can be made
+
+pre-commit:
+  parallel: true
+  commands:
+    # Format and lint Go code
+    golint:
+      glob: "*.go"
+      run: make lint
+      fail_text: "Linting failed. Please fix the issues and try again."
+      stage_fixed: true
+
+    # Check go.mod tidiness
+    gomod:
+      glob: "{go.mod,go.sum}"
+      run: go mod tidy && git diff --exit-code go.mod go.sum
+      fail_text: "go.mod/go.sum not tidy. Run 'go mod tidy' and commit the changes."
+
+  # Optional: Skip hooks with LEFTHOOK=0 git commit
+  skip_output:
+    - meta
+    - summary
+
+# Optional: Commit message validation
+# commit-msg:
+#   commands:
+#     commitlint:
+#       run: echo "{1}" | grep -E "^(feat|fix|docs|style|refactor|test|chore)(\(.+\))?: .{1,50}"
+#       fail_text: "Commit message should follow conventional format: type(scope): description"
+
+# Pre-push hook to run tests (optional)
+# pre-push:
+#   commands:
+#     tests:
+#       run: make test
+#       fail_text: "Tests failed. Please fix and try again."

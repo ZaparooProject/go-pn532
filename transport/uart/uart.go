@@ -22,6 +22,8 @@ package uart
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -125,6 +127,31 @@ func (t *Transport) SendCommand(cmd byte, args []byte) ([]byte, error) {
 	}
 
 	return res, nil
+}
+
+// SendCommandWithContext sends a command to the PN532 with context support
+func (t *Transport) SendCommandWithContext(ctx context.Context, cmd byte, args []byte) ([]byte, error) {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// If port is nil (e.g., in tests), simulate a blocking operation that can be cancelled
+	if t.port == nil {
+		// Simulate the kind of delays that happen in real UART operations
+		select {
+		case <-time.After(100 * time.Millisecond): // Simulate blocking operation
+			return nil, errors.New("simulated UART error: no port available")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// For real ports, delegate to existing implementation
+	// TODO: Add context-aware operations to real implementation
+	return t.SendCommand(cmd, args)
 }
 
 // SetTimeout sets the read timeout for the transport

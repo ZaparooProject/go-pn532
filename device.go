@@ -156,9 +156,11 @@ type ConnectOption func(*connectConfig) error
 type connectConfig struct {
 	transportFactory       TransportFactory
 	transportDeviceFactory TransportFromDeviceFactory
+	deviceDetector         func(*detection.Options) ([]detection.DeviceInfo, error)
 	deviceOptions          []Option
 	timeout                time.Duration
 	autoDetect             bool
+	connectionRetries      int
 }
 
 // WithAutoDetection enables automatic device detection instead of using a specific path
@@ -201,6 +203,25 @@ func WithTransportFromDeviceFactory(factory TransportFromDeviceFactory) ConnectO
 	}
 }
 
+// WithConnectionRetries sets the number of connection retry attempts
+func WithConnectionRetries(maxAttempts int) ConnectOption {
+	return func(c *connectConfig) error {
+		if maxAttempts < 1 {
+			return fmt.Errorf("connection retries must be at least 1, got %d", maxAttempts)
+		}
+		c.connectionRetries = maxAttempts
+		return nil
+	}
+}
+
+// WithDeviceDetector sets a custom device detector function for auto-detection
+func WithDeviceDetector(detector func(*detection.Options) ([]detection.DeviceInfo, error)) ConnectOption {
+	return func(c *connectConfig) error {
+		c.deviceDetector = detector
+		return nil
+	}
+}
+
 // ConnectDevice creates and initializes a PN532 device from a path or auto-detection.
 // This is a high-level convenience function that handles transport creation, device
 // initialization, and optional validation setup.
@@ -220,6 +241,7 @@ func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 		timeout:                30 * time.Second,
 		transportFactory:       nil,
 		transportDeviceFactory: nil,
+		connectionRetries:      3, // Default to 3 attempts for manual connections
 	}
 
 	for _, opt := range opts {
@@ -233,7 +255,7 @@ func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 
 func createTransport(path string, config *connectConfig) (Transport, error) {
 	if config.autoDetect || path == "" {
-		return createAutoDetectedTransport(config.transportDeviceFactory)
+		return createAutoDetectedTransport(config.transportDeviceFactory, config.deviceDetector)
 	}
 	return createManualTransport(path, config.transportFactory)
 }
@@ -257,6 +279,36 @@ func setupDevice(transport Transport, config *connectConfig) (*Device, error) {
 	return device, nil
 }
 
+// setupDeviceWithRetry wraps setupDevice with retry logic for connection attempts
+func setupDeviceWithRetry(transport Transport, config *connectConfig) (*Device, error) {
+	// Auto-detection should bypass retry logic (single attempt only)
+	if config.autoDetect {
+		return setupDevice(transport, config)
+	}
+
+	// Manual connections use retry logic
+	retryConfig := &RetryConfig{
+		MaxAttempts:       config.connectionRetries,
+		InitialBackoff:    50 * time.Millisecond,
+		MaxBackoff:        500 * time.Millisecond,
+		BackoffMultiplier: 2.0,
+		Jitter:            0.1,
+		RetryTimeout:      10 * time.Second,
+	}
+
+	var device *Device
+	err := RetryWithConfig(context.Background(), retryConfig, func() error {
+		var err error
+		device, err = setupDevice(transport, config)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup device after %d attempts: %w", config.connectionRetries, err)
+	}
+
+	return device, nil
+}
+
 func ConnectDevice(path string, opts ...ConnectOption) (*Device, error) {
 	config, err := applyConnectOptions(opts)
 	if err != nil {
@@ -268,7 +320,7 @@ func ConnectDevice(path string, opts ...ConnectOption) (*Device, error) {
 		return nil, fmt.Errorf("failed to create transport: %w", err)
 	}
 
-	device, err := setupDevice(transport, config)
+	device, err := setupDeviceWithRetry(transport, config)
 	if err != nil {
 		_ = transport.Close()
 		return nil, err
@@ -292,11 +344,22 @@ func createManualTransport(path string, factory TransportFactory) (Transport, er
 }
 
 // createAutoDetectedTransport handles auto-detection of devices
-func createAutoDetectedTransport(factory TransportFromDeviceFactory) (Transport, error) {
+func createAutoDetectedTransport(
+	factory TransportFromDeviceFactory,
+	detector func(*detection.Options) ([]detection.DeviceInfo, error),
+) (Transport, error) {
 	opts := detection.DefaultOptions()
 	opts.Mode = detection.Safe
 
-	devices, err := detection.DetectAll(&opts)
+	var devices []detection.DeviceInfo
+	var err error
+
+	if detector != nil {
+		devices, err = detector(&opts)
+	} else {
+		devices, err = detection.DetectAll(&opts)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %w", err)
 	}

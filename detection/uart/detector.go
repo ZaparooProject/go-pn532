@@ -302,16 +302,26 @@ func isLikelyPN532(port *serialPort) bool {
 	return false
 }
 
-// probeDevice attempts to communicate with a device to verify it's a PN532
+// probeDevice attempts to communicate with a device to verify it's a PN532.
+//
+// NO RETRY POLICY: This function intentionally performs only a single attempt
+// to communicate with each device. Retrying failed connections during auto-detection
+// could overwhelm devices that are not actually PN532 readers, potentially causing:
+// - Hardware stress on non-PN532 devices
+// - Delayed detection process
+// - Resource exhaustion on busy/restricted devices
+//
+// Connection retries are handled at the device level for known PN532 paths,
+// not during the auto-detection phase.
 func probeDevice(_ context.Context, path string, mode detection.Mode) bool {
-	// Try to open the port
+	// Try to open the port (single attempt only)
 	transport, err := uart.New(path)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = transport.Close() }()
 
-	// Create a PN532 device
+	// Create a PN532 device (single attempt only)
 	device, err := pn532.New(transport)
 	if err != nil {
 		return false

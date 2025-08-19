@@ -18,20 +18,38 @@
 // along with go-pn532; if not, write to the Free Software Foundation,
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-package polling
+package i2c
 
-import "time"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
-// Config holds polling configuration options
-type Config struct {
-	PollInterval       time.Duration
-	CardRemovalTimeout time.Duration
-}
+// TestI2CContextCancellation tests that I2C transport
+// properly handles context cancellation
+func TestI2CContextCancellation(t *testing.T) {
+	t.Parallel()
+	// This test verifies that context cancellation is checked before operations
 
-// DefaultConfig returns the default polling configuration
-func DefaultConfig() *Config {
-	return &Config{
-		PollInterval:       100 * time.Millisecond,
-		CardRemovalTimeout: 300 * time.Millisecond,
+	// Create a context that is already cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Create a transport instance
+	transport := &Transport{}
+
+	cmd := byte(0x02) // GetFirmwareVersion
+	args := []byte{}
+
+	_, err := transport.SendCommandWithContext(ctx, cmd, args)
+
+	// We expect this to return context.Canceled immediately
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Expected context.Canceled error, got: %v", err)
 	}
 }

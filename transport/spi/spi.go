@@ -23,6 +23,7 @@ package spi
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"time"
 
@@ -167,6 +168,20 @@ func (t *Transport) SendCommand(cmd byte, args []byte) ([]byte, error) {
 	time.Sleep(6 * time.Millisecond)
 
 	return t.receiveFrame()
+}
+
+// SendCommandWithContext sends a command to the PN532 with context support
+func (t *Transport) SendCommandWithContext(ctx context.Context, cmd byte, args []byte) ([]byte, error) {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// For now, delegate to existing implementation
+	// TODO: Add context-aware operations
+	return t.SendCommand(cmd, args)
 }
 
 // sendFrame sends a command frame to the PN532

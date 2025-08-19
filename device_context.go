@@ -121,8 +121,8 @@ func (d *Device) setDefaultFirmwareVersion() {
 }
 
 // GetFirmwareVersionContext returns the PN532 firmware version with context support
-func (d *Device) GetFirmwareVersionContext(_ context.Context) (*FirmwareVersion, error) {
-	res, err := d.transport.SendCommand(cmdGetFirmwareVersion, []byte{})
+func (d *Device) GetFirmwareVersionContext(ctx context.Context) (*FirmwareVersion, error) {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdGetFirmwareVersion, []byte{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to send GetFirmwareVersion command: %w", err)
 	}
@@ -227,8 +227,8 @@ func (*Device) createDefaultFirmwareVersion() *FirmwareVersion {
 }
 
 // GetGeneralStatusContext returns the PN532 general status with context support
-func (d *Device) GetGeneralStatusContext(_ context.Context) (*GeneralStatus, error) {
-	res, err := d.transport.SendCommand(cmdGetGeneralStatus, []byte{})
+func (d *Device) GetGeneralStatusContext(ctx context.Context) (*GeneralStatus, error) {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdGetGeneralStatus, []byte{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to send GetGeneralStatus command: %w", err)
 	}
@@ -244,11 +244,11 @@ func (d *Device) GetGeneralStatusContext(_ context.Context) (*GeneralStatus, err
 }
 
 // DiagnoseContext performs a self-diagnosis test with context support
-func (d *Device) DiagnoseContext(_ context.Context, testNumber byte, data []byte) (*DiagnoseResult, error) {
+func (d *Device) DiagnoseContext(ctx context.Context, testNumber byte, data []byte) (*DiagnoseResult, error) {
 	// Build command: TestNumber + optional data
 	cmdPayload := append([]byte{testNumber}, data...)
 
-	res, err := d.transport.SendCommand(cmdDiagnose, cmdPayload)
+	res, err := d.transport.SendCommandWithContext(ctx, cmdDiagnose, cmdPayload)
 	if err != nil {
 		return nil, fmt.Errorf("diagnose command failed: %w", err)
 	}
@@ -311,8 +311,8 @@ func (d *Device) setupSAMConfigurationContext(ctx context.Context) error {
 }
 
 // SAMConfigurationContext configures the SAM with context support
-func (d *Device) SAMConfigurationContext(_ context.Context, mode SAMMode, timeout, irq byte) error {
-	res, err := d.transport.SendCommand(cmdSamConfiguration, []byte{byte(mode), timeout, irq})
+func (d *Device) SAMConfigurationContext(ctx context.Context, mode SAMMode, timeout, irq byte) error {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdSamConfiguration, []byte{byte(mode), timeout, irq})
 	if err != nil {
 		return fmt.Errorf("SAM configuration command failed: %w", err)
 	}
@@ -539,9 +539,9 @@ func (*Device) parseISO14443BData(targetData []byte) []byte {
 }
 
 // SendDataExchangeContext sends a data exchange command with context support
-func (d *Device) SendDataExchangeContext(_ context.Context, data []byte) ([]byte, error) {
+func (d *Device) SendDataExchangeContext(ctx context.Context, data []byte) ([]byte, error) {
 	targetNum := d.getCurrentTarget()
-	res, err := d.transport.SendCommand(cmdInDataExchange, append([]byte{targetNum}, data...))
+	res, err := d.transport.SendCommandWithContext(ctx, cmdInDataExchange, append([]byte{targetNum}, data...))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send data exchange command: %w", err)
 	}
@@ -562,8 +562,8 @@ func (d *Device) SendDataExchangeContext(_ context.Context, data []byte) ([]byte
 }
 
 // SendRawCommandContext sends a raw command with context support
-func (d *Device) SendRawCommandContext(_ context.Context, data []byte) ([]byte, error) {
-	res, err := d.transport.SendCommand(cmdInCommunicateThru, data)
+func (d *Device) SendRawCommandContext(ctx context.Context, data []byte) ([]byte, error) {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdInCommunicateThru, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send communicate through command: %w", err)
 	}
@@ -584,8 +584,8 @@ func (d *Device) SendRawCommandContext(_ context.Context, data []byte) ([]byte, 
 }
 
 // InReleaseContext releases the selected target(s) with context support
-func (d *Device) InReleaseContext(_ context.Context, targetNumber byte) error {
-	res, err := d.transport.SendCommand(cmdInRelease, []byte{targetNumber})
+func (d *Device) InReleaseContext(ctx context.Context, targetNumber byte) error {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdInRelease, []byte{targetNumber})
 	if err != nil {
 		return fmt.Errorf("InRelease command failed: %w", err)
 	}
@@ -603,8 +603,8 @@ func (d *Device) InReleaseContext(_ context.Context, targetNumber byte) error {
 }
 
 // InSelectContext selects the specified target with context support
-func (d *Device) InSelectContext(_ context.Context, targetNumber byte) error {
-	res, err := d.transport.SendCommand(cmdInSelect, []byte{targetNumber})
+func (d *Device) InSelectContext(ctx context.Context, targetNumber byte) error {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdInSelect, []byte{targetNumber})
 	if err != nil {
 		return fmt.Errorf("InSelect command failed: %w", err)
 	}
@@ -626,7 +626,7 @@ func (d *Device) InSelectContext(_ context.Context, targetNumber byte) error {
 
 // InAutoPollContext polls for targets with context support
 func (d *Device) InAutoPollContext(
-	_ context.Context, pollCount, pollPeriod byte, targetTypes []AutoPollTarget,
+	ctx context.Context, pollCount, pollPeriod byte, targetTypes []AutoPollTarget,
 ) ([]AutoPollResult, error) {
 	if pollPeriod < 1 || pollPeriod > 15 {
 		return nil, errors.New("poll period must be between 1 and 15")
@@ -642,7 +642,7 @@ func (d *Device) InAutoPollContext(
 		data = append(data, byte(tt))
 	}
 
-	res, err := d.transport.SendCommand(cmdInAutoPoll, data)
+	res, err := d.transport.SendCommandWithContext(ctx, cmdInAutoPoll, data)
 	if err != nil {
 		return nil, fmt.Errorf("InAutoPoll command failed: %w", err)
 	}
@@ -749,8 +749,8 @@ func (*Device) normalizeMaxTargets(maxTg byte) byte {
 }
 
 // executeInListPassiveTarget sends the InListPassiveTarget command
-func (d *Device) executeInListPassiveTarget(_ context.Context, data []byte) ([]byte, error) {
-	result, err := d.transport.SendCommand(cmdInListPassiveTarget, data)
+func (d *Device) executeInListPassiveTarget(ctx context.Context, data []byte) ([]byte, error) {
+	result, err := d.transport.SendCommandWithContext(ctx, cmdInListPassiveTarget, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send InListPassiveTarget command: %w", err)
 	}
@@ -952,8 +952,8 @@ func (d *Device) fallbackToInAutoPoll(ctx context.Context, maxTg, brTy byte) ([]
 }
 
 // PowerDownContext puts the PN532 into power down mode with context support
-func (d *Device) PowerDownContext(_ context.Context, wakeupEnable, irqEnable byte) error {
-	res, err := d.transport.SendCommand(cmdPowerDown, []byte{wakeupEnable, irqEnable})
+func (d *Device) PowerDownContext(ctx context.Context, wakeupEnable, irqEnable byte) error {
+	res, err := d.transport.SendCommandWithContext(ctx, cmdPowerDown, []byte{wakeupEnable, irqEnable})
 	if err != nil {
 		return fmt.Errorf("PowerDown command failed: %w", err)
 	}

@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,9 @@ import (
 type Transport interface {
 	// SendCommand sends a command to the PN532 and waits for response
 	SendCommand(cmd byte, args []byte) ([]byte, error)
+
+	// SendCommandWithContext sends a command to the PN532 with context support
+	SendCommandWithContext(ctx context.Context, cmd byte, args []byte) ([]byte, error)
 
 	// Close closes the transport connection
 	Close() error
@@ -116,6 +120,26 @@ func (t *TransportWithRetry) SendCommand(cmd byte, args []byte) ([]byte, error) 
 	return result, err
 }
 
+// SendCommandWithContext sends a command with context support and retry logic
+func (t *TransportWithRetry) SendCommandWithContext(ctx context.Context, cmd byte, args []byte) ([]byte, error) {
+	var result []byte
+	err := RetryWithConfig(ctx, t.config, func() error {
+		var err error
+		result, err = t.transport.SendCommandWithContext(ctx, cmd, args)
+		if err != nil {
+			// Wrap transport errors for better error handling
+			return &TransportError{
+				Op:        "SendCommandWithContext",
+				Err:       err,
+				Type:      GetErrorType(err),
+				Retryable: IsRetryable(err),
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
 // Close closes the transport connection
 func (t *TransportWithRetry) Close() error {
 	if err := t.transport.Close(); err != nil {
@@ -162,6 +186,7 @@ type MockTransport struct {
 	errorMap  map[byte]error
 	timeout   time.Duration
 	delay     time.Duration
+	mu        sync.RWMutex
 	connected bool
 }
 
@@ -179,27 +204,84 @@ func NewMockTransport() *MockTransport {
 
 // SendCommand implements Transport interface
 func (m *MockTransport) SendCommand(cmd byte, _ []byte) ([]byte, error) {
-	if !m.connected {
+	m.mu.RLock()
+	connected := m.connected
+	delay := m.delay
+	m.mu.RUnlock()
+
+	if !connected {
 		return nil, errors.New("transport not connected")
 	}
 
+	// Simulate hardware delay if configured
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+
+	m.mu.Lock()
 	// Track call count
 	m.callCount[cmd]++
 
-	// Simulate hardware delay if configured
-	if m.delay > 0 {
-		time.Sleep(m.delay)
-	}
-
 	// Check for injected error
 	if err, exists := m.errorMap[cmd]; exists {
+		m.mu.Unlock()
 		return nil, err
 	}
 
 	// Return configured response
 	if response, exists := m.responses[cmd]; exists {
+		m.mu.Unlock()
 		return response, nil
 	}
+	m.mu.Unlock()
+
+	// Default response for unknown commands
+	return []byte{0xD5, cmd + 1, 0x00}, nil // Basic ACK response
+}
+
+// SendCommandWithContext implements Transport interface with context support
+func (m *MockTransport) SendCommandWithContext(ctx context.Context, cmd byte, _ []byte) ([]byte, error) {
+	// Check context cancellation first
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	m.mu.RLock()
+	connected := m.connected
+	delay := m.delay
+	m.mu.RUnlock()
+
+	if !connected {
+		return nil, errors.New("transport not connected")
+	}
+
+	// Simulate hardware delay if configured with context awareness
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	m.mu.Lock()
+	// Track call count
+	m.callCount[cmd]++
+
+	// Check for injected error
+	if err, exists := m.errorMap[cmd]; exists {
+		m.mu.Unlock()
+		return nil, err
+	}
+
+	// Return configured response
+	if response, exists := m.responses[cmd]; exists {
+		m.mu.Unlock()
+		return response, nil
+	}
+	m.mu.Unlock()
 
 	// Default response for unknown commands
 	return []byte{0xD5, cmd + 1, 0x00}, nil // Basic ACK response
@@ -207,19 +289,26 @@ func (m *MockTransport) SendCommand(cmd byte, _ []byte) ([]byte, error) {
 
 // Close implements Transport interface
 func (m *MockTransport) Close() error {
+	m.mu.Lock()
 	m.connected = false
+	m.mu.Unlock()
 	return nil
 }
 
 // SetTimeout implements Transport interface
 func (m *MockTransport) SetTimeout(timeout time.Duration) error {
+	m.mu.Lock()
 	m.timeout = timeout
+	m.mu.Unlock()
 	return nil
 }
 
 // IsConnected implements Transport interface
 func (m *MockTransport) IsConnected() bool {
-	return m.connected
+	m.mu.RLock()
+	connected := m.connected
+	m.mu.RUnlock()
+	return connected
 }
 
 // Type implements Transport interface
@@ -231,31 +320,44 @@ func (*MockTransport) Type() TransportType {
 
 // SetResponse configures a response for a specific command
 func (m *MockTransport) SetResponse(cmd byte, response []byte) {
+	m.mu.Lock()
 	m.responses[cmd] = response
+	m.mu.Unlock()
 }
 
 // SetError configures an error to be returned for a specific command
 func (m *MockTransport) SetError(cmd byte, err error) {
+	m.mu.Lock()
 	m.errorMap[cmd] = err
+	m.mu.Unlock()
 }
 
 // ClearError removes error injection for a command
 func (m *MockTransport) ClearError(cmd byte) {
+	m.mu.Lock()
 	delete(m.errorMap, cmd)
+	m.mu.Unlock()
 }
 
 // SetDelay configures a delay to simulate hardware response time
 func (m *MockTransport) SetDelay(delay time.Duration) {
+	m.mu.Lock()
 	m.delay = delay
+	m.mu.Unlock()
 }
 
 // GetCallCount returns how many times a command was called
 func (m *MockTransport) GetCallCount(cmd byte) int {
-	return m.callCount[cmd]
+	m.mu.RLock()
+	count := m.callCount[cmd]
+	m.mu.RUnlock()
+	return count
 }
 
 // Reset clears all call counts and resets state
 func (m *MockTransport) Reset() {
+	m.mu.Lock()
 	m.callCount = make(map[byte]int)
 	m.connected = true
+	m.mu.Unlock()
 }
