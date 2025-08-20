@@ -146,6 +146,7 @@ func TestSession_ConcurrentPauseResume(t *testing.T) {
 	assert.False(t, session.isPaused.Load())
 }
 
+//nolint:funlen // Test function with multiple subtests
 func TestSession_WriteToTag(t *testing.T) {
 	t.Parallel()
 
@@ -161,10 +162,12 @@ func TestSession_WriteToTag(t *testing.T) {
 		detectedTag := createTestDetectedTag()
 		writeCallCount := 0
 
-		err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
-			writeCallCount++
-			return nil
-		})
+		err := session.WriteToTag(
+			context.Background(), context.Background(), detectedTag,
+			func(_ context.Context, _ pn532.Tag) error {
+				writeCallCount++
+				return nil
+			})
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, writeCallCount)
@@ -183,9 +186,11 @@ func TestSession_WriteToTag(t *testing.T) {
 		detectedTag := createTestDetectedTag()
 		expectedErr := errors.New("write failed")
 
-		err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
-			return expectedErr
-		})
+		err := session.WriteToTag(
+			context.Background(), context.Background(), detectedTag,
+			func(_ context.Context, _ pn532.Tag) error {
+				return expectedErr
+			})
 
 		require.Error(t, err)
 		assert.Equal(t, expectedErr, err)
@@ -208,14 +213,194 @@ func TestSession_WriteToTag(t *testing.T) {
 			Type:     pn532.TagTypeUnknown, // This will cause CreateTag to return ErrInvalidTag
 		}
 
-		err := session.WriteToTag(context.Background(), invalidTag, func(_ pn532.Tag) error {
-			t.Fatal("Write function should not be called")
-			return nil
-		})
+		err := session.WriteToTag(
+			context.Background(), context.Background(), invalidTag,
+			func(_ context.Context, _ pn532.Tag) error {
+				t.Fatal("Write function should not be called")
+				return nil
+			})
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to create tag")
 		assert.False(t, session.isPaused.Load()) // Should be resumed even on error
+	})
+
+	t.Run("IndependentWriteContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		device, mockTransport := createMockDeviceWithTransport(t)
+		session := NewSession(device, nil)
+
+		// Setup mock responses
+		mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response
+
+		// Create separate contexts - session ctx stays active, write ctx gets cancelled
+		sessionCtx := context.Background()
+		writeCtx, cancelWrite := context.WithCancel(context.Background())
+
+		detectedTag := createTestDetectedTag()
+		writeCalled := false
+
+		err := session.WriteToTag(sessionCtx, writeCtx, detectedTag, func(ctx context.Context, _ pn532.Tag) error {
+			writeCalled = true
+			// Cancel the write context during the write operation
+			cancelWrite()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				return errors.New("context should be cancelled")
+			}
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "context canceled")
+		assert.True(t, writeCalled)
+		assert.False(t, session.isPaused.Load()) // Should be resumed after cancelled write
+	})
+}
+
+func TestSession_PauseAcknowledgment(t *testing.T) {
+	t.Parallel()
+	device, mockTransport := createMockDeviceWithTransport(t)
+	session := NewSession(device, nil)
+
+	// Setup mock responses for polling
+	mockTransport.SetResponse(0x4A, []byte{0xD5, 0x4B, 0x00}) // No tag detected
+	mockTransport.SetResponse(0x54, []byte{0x55, 0x00})       // InSelect response
+	mockTransport.SetResponse(0x40, []byte{0x41, 0x00})       // DataExchange response
+
+	// Start polling in background
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pollingStarted := make(chan struct{})
+	go func() {
+		close(pollingStarted)
+		_ = session.Start(ctx) // Start polling
+	}()
+
+	// Wait for polling to start
+	<-pollingStarted
+	time.Sleep(10 * time.Millisecond) // Give polling time to start
+
+	detectedTag := createTestDetectedTag()
+	writeStarted := make(chan struct{})
+	writeCompleted := make(chan struct{})
+
+	// Start a write operation that should pause polling first
+	go func() {
+		defer close(writeCompleted)
+		close(writeStarted)
+		err := session.WriteToTag(
+			context.Background(), context.Background(), detectedTag,
+			func(_ context.Context, _ pn532.Tag) error {
+				// This should run only after polling is properly paused
+				return nil
+			})
+		assert.NoError(t, err)
+	}()
+
+	// Wait for write to start and complete
+	<-writeStarted
+	<-writeCompleted
+
+	// If we get here without deadlock or panic, the pause mechanism works
+	assert.False(t, session.isPaused.Load()) // Should be resumed after write
+}
+
+func TestSession_PauseAcknowledgment_RaceCondition(t *testing.T) {
+	t.Parallel()
+	device, mockTransport := createMockDeviceWithTransport(t)
+	session := NewSession(device, nil)
+
+	// Setup mock responses
+	mockTransport.SetResponse(0x4A, []byte{0xD5, 0x4B, 0x00}) // No tag detected
+
+	// Test concurrent calls to pauseWithAck for race conditions
+	const numGoroutines = 10
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	errorChan := make(chan error, numGoroutines)
+
+	// Launch multiple goroutines calling pauseWithAck concurrently
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := session.pauseWithAck(ctx); err != nil {
+				errorChan <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errorChan)
+
+	// Check for errors
+	for err := range errorChan {
+		t.Errorf("pauseWithAck failed: %v", err)
+	}
+
+	// After all calls, session should be paused
+	assert.True(t, session.isPaused.Load(), "Session should be paused after concurrent pauseWithAck calls")
+}
+
+func TestSession_PauseAcknowledgment_ContextCancellation(t *testing.T) {
+	t.Parallel()
+	device, mockTransport := createMockDeviceWithTransport(t)
+	session := NewSession(device, nil)
+
+	// Setup mock responses
+	mockTransport.SetResponse(0x4A, []byte{0xD5, 0x4B, 0x00}) // No tag detected
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// pauseWithAck should return context.Canceled error
+	err := session.pauseWithAck(ctx)
+	require.Error(t, err, "pauseWithAck should return error when context is cancelled")
+	require.ErrorIs(t, err, context.Canceled, "Error should be context.Canceled")
+
+	// Session should not be paused if context was cancelled
+	assert.False(t, session.isPaused.Load(), "Session should not be paused when context is cancelled")
+}
+
+func TestSafeTimerStop(t *testing.T) {
+	t.Parallel()
+
+	t.Run("StopsActiveTimer", func(t *testing.T) {
+		t.Parallel()
+		callbackExecuted := false
+		timer := time.AfterFunc(100*time.Millisecond, func() {
+			callbackExecuted = true
+		})
+
+		safeTimerStop(timer)
+		time.Sleep(150 * time.Millisecond) // Wait longer than the timer duration
+
+		assert.False(t, callbackExecuted, "Timer callback should not execute after safe stop")
+	})
+
+	t.Run("HandlesNilTimer", func(t *testing.T) {
+		t.Parallel()
+		// Should not panic
+		safeTimerStop(nil)
+	})
+
+	t.Run("HandlesAlreadyFiredTimer", func(t *testing.T) {
+		t.Parallel()
+		callbackExecuted := false
+		timer := time.AfterFunc(1*time.Millisecond, func() {
+			callbackExecuted = true
+		})
+
+		time.Sleep(10 * time.Millisecond) // Let timer fire
+		assert.True(t, callbackExecuted, "Timer should have fired")
+
+		// Should not block or panic when stopping an already-fired timer
+		safeTimerStop(timer)
 	})
 }
 
@@ -242,15 +427,17 @@ func TestSession_ConcurrentWrites(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
-				mu.Lock()
-				writeOrder = append(writeOrder, id)
-				mu.Unlock()
+			err := session.WriteToTag(
+				context.Background(), context.Background(), detectedTag,
+				func(_ context.Context, _ pn532.Tag) error {
+					mu.Lock()
+					writeOrder = append(writeOrder, id)
+					mu.Unlock()
 
-				// Simulate write time
-				time.Sleep(10 * time.Millisecond)
-				return nil
-			})
+					// Simulate write time
+					time.Sleep(10 * time.Millisecond)
+					return nil
+				})
 
 			assert.NoError(t, err)
 		}(i)
@@ -301,12 +488,14 @@ func TestSession_WriteToTagPausesBehavior(t *testing.T) {
 		}
 	}()
 
-	err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
-		// During write, session should be paused
-		assert.True(t, session.isPaused.Load())
-		time.Sleep(20 * time.Millisecond) // Simulate write operation
-		return nil
-	})
+	err := session.WriteToTag(
+		context.Background(), context.Background(), detectedTag,
+		func(_ context.Context, _ pn532.Tag) error {
+			// During write, session should be paused
+			assert.True(t, session.isPaused.Load())
+			time.Sleep(20 * time.Millisecond) // Simulate write operation
+			return nil
+		})
 
 	wg.Wait()
 
@@ -329,11 +518,13 @@ func TestSession_WriteToTagWithLongOperation(t *testing.T) {
 
 	start := time.Now()
 
-	err := session.WriteToTag(context.Background(), detectedTag, func(_ pn532.Tag) error {
-		// Simulate a longer write operation
-		time.Sleep(100 * time.Millisecond)
-		return nil
-	})
+	err := session.WriteToTag(
+		context.Background(), context.Background(), detectedTag,
+		func(_ context.Context, _ pn532.Tag) error {
+			// Simulate a longer write operation
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		})
 
 	duration := time.Since(start)
 
@@ -346,28 +537,28 @@ func TestSession_WriteToTagErrorHandling(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		writeFunc   func(pn532.Tag) error
+		writeFunc   func(context.Context, pn532.Tag) error
 		name        string
 		expectError bool
 	}{
 		{
 			name:        "WriteSuccess",
 			expectError: false,
-			writeFunc: func(_ pn532.Tag) error {
+			writeFunc: func(_ context.Context, _ pn532.Tag) error {
 				return nil
 			},
 		},
 		{
 			name:        "WriteFailure",
 			expectError: true,
-			writeFunc: func(_ pn532.Tag) error {
+			writeFunc: func(_ context.Context, _ pn532.Tag) error {
 				return errors.New("simulated write error")
 			},
 		},
 		{
 			name:        "WritePanic",
 			expectError: true,
-			writeFunc: func(_ pn532.Tag) error {
+			writeFunc: func(_ context.Context, _ pn532.Tag) error {
 				panic("simulated panic")
 			},
 		},
@@ -405,14 +596,14 @@ func TestSession_WriteToTagErrorHandling(t *testing.T) {
 func executeWriteWithPanicRecovery(
 	session *Session,
 	tag *pn532.DetectedTag,
-	writeFunc func(pn532.Tag) error,
+	writeFunc func(context.Context, pn532.Tag) error,
 ) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = errors.New("panic occurred")
 		}
 	}()
-	return session.WriteToTag(context.Background(), tag, writeFunc)
+	return session.WriteToTag(context.Background(), context.Background(), tag, writeFunc)
 }
 
 func TestSession_ConcurrentWriteStressTest(t *testing.T) {
@@ -464,16 +655,18 @@ func runStressTestWrites(
 	params stressTestParams,
 ) {
 	for j := 0; j < params.writesPerGoroutine; j++ {
-		err := session.WriteToTag(context.Background(), tag, func(_ pn532.Tag) error {
-			// Simulate variable write times
-			time.Sleep(time.Duration(params.routineID+j) * time.Millisecond)
+		err := session.WriteToTag(
+			context.Background(), context.Background(), tag,
+			func(_ context.Context, _ pn532.Tag) error {
+				// Simulate variable write times
+				time.Sleep(time.Duration(params.routineID+j) * time.Millisecond)
 
-			// Occasionally return an error
-			if (params.routineID+j)%7 == 0 {
-				return errors.New("simulated error")
-			}
-			return nil
-		})
+				// Occasionally return an error
+				if (params.routineID+j)%7 == 0 {
+					return errors.New("simulated error")
+				}
+				return nil
+			})
 
 		if err != nil {
 			atomic.AddInt64(params.errorCount, 1)
@@ -620,7 +813,7 @@ func TestSession_WriteToNextTag(t *testing.T) {
 
 		writeCallCount := 0
 		err := session.WriteToNextTag(
-			context.Background(), 5*time.Second, func(_ context.Context, tag pn532.Tag) error {
+			context.Background(), context.Background(), 5*time.Second, func(_ context.Context, tag pn532.Tag) error {
 				writeCallCount++
 				// Validate we got a real tag, not nil
 				require.NotNil(t, tag, "WriteToNextTag should pass a non-nil Tag object")
@@ -643,10 +836,12 @@ func TestSession_WriteToNextTag(t *testing.T) {
 
 		start := time.Now()
 		timeout := 150 * time.Millisecond
-		err := session.WriteToNextTag(context.Background(), timeout, func(_ context.Context, _ pn532.Tag) error {
-			t.Fatal("Write function should not be called")
-			return nil
-		})
+		err := session.WriteToNextTag(
+			context.Background(), context.Background(), timeout,
+			func(_ context.Context, _ pn532.Tag) error {
+				t.Fatal("Write function should not be called")
+				return nil
+			})
 
 		elapsed := time.Since(start)
 		require.Error(t, err)
@@ -656,45 +851,40 @@ func TestSession_WriteToNextTag(t *testing.T) {
 		// Should have actually waited close to the timeout duration (polling continuously)
 		assert.GreaterOrEqual(t, elapsed, timeout-20*time.Millisecond, "Should wait approximately the timeout duration")
 	})
-}
 
-// TestSafeTimerStop tests the safeTimerStop helper function that should eliminate duplication
-func TestSafeTimerStop(t *testing.T) {
-	t.Parallel()
-
-	t.Run("StopsActiveTimer", func(t *testing.T) {
+	t.Run("IndependentWriteContextCancellation", func(t *testing.T) {
 		t.Parallel()
-		var callbackCalled atomic.Bool
-		timer := time.AfterFunc(100*time.Millisecond, func() {
-			callbackCalled.Store(true)
+		device, mockTransport := createMockDeviceWithTransport(t)
+		session := NewSession(device, nil)
+
+		// Setup mock responses for tag detection
+		mockTransport.SetResponse(0x4A, []byte{
+			0x4B, 0x01, 0x01, 0x00, 0x04, 0x08, 0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
 		})
+		mockTransport.SetResponse(0x54, []byte{0x55, 0x00}) // InSelect response
 
-		// This should stop the timer and drain the channel
-		safeTimerStop(timer)
+		// Create separate contexts - session ctx stays active, write ctx gets cancelled
+		sessionCtx := context.Background()
+		writeCtx, cancelWrite := context.WithCancel(context.Background())
 
-		// Wait longer than timer would have fired
-		time.Sleep(150 * time.Millisecond)
-		assert.False(t, callbackCalled.Load(), "Timer callback should not fire after safeTimerStop")
-	})
+		writeCalled := false
+		err := session.WriteToNextTag(
+			sessionCtx, writeCtx, 5*time.Second,
+			func(ctx context.Context, _ pn532.Tag) error {
+				writeCalled = true
+				// Cancel the write context during the write operation
+				cancelWrite()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+					return errors.New("context should be cancelled")
+				}
+			})
 
-	t.Run("HandlesNilTimer", func(t *testing.T) {
-		t.Parallel()
-		// Should not panic
-		safeTimerStop(nil)
-	})
-
-	t.Run("HandlesAlreadyFiredTimer", func(t *testing.T) {
-		t.Parallel()
-		var callbackCalled atomic.Bool
-		timer := time.AfterFunc(1*time.Millisecond, func() {
-			callbackCalled.Store(true)
-		})
-
-		// Wait for timer to fire
-		time.Sleep(10 * time.Millisecond)
-		assert.True(t, callbackCalled.Load())
-
-		// Should not panic or block
-		safeTimerStop(timer)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "context canceled")
+		assert.True(t, writeCalled)
+		assert.False(t, session.isPaused.Load()) // Should be resumed after cancelled write
 	})
 }

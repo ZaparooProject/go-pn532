@@ -130,14 +130,14 @@ func benchmarkWriteOperation(b *testing.B, session *Session) {
 	ctx := context.Background()
 
 	// Simple write function
-	writeFn := func(_ pn532.Tag) error {
+	writeFn := func(_ context.Context, _ pn532.Tag) error {
 		return nil // Mock successful write
 	}
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		err := session.WriteToTag(ctx, detectedTag, writeFn)
+		err := session.WriteToTag(ctx, ctx, detectedTag, writeFn)
 		if err != nil {
 			b.Fatalf("WriteToTag failed: %v", err)
 		}

@@ -40,6 +40,7 @@ type Session struct {
 	OnCardChanged  func(tag *pn532.DetectedTag) error
 	pauseChan      chan struct{}
 	resumeChan     chan struct{}
+	ackChan        chan struct{}
 	actor          *DeviceActor
 	state          CardState
 	stateMutex     sync.RWMutex
@@ -58,6 +59,7 @@ func NewSession(device *pn532.Device, config *Config) *Session {
 		state:      CardState{},
 		pauseChan:  make(chan struct{}, 1),
 		resumeChan: make(chan struct{}, 1),
+		ackChan:    make(chan struct{}, 1),
 	}
 }
 
@@ -122,7 +124,7 @@ func (s *Session) Close() error {
 	// Stop any running removal timer
 	s.stateMutex.Lock()
 	if s.state.RemovalTimer != nil {
-		s.state.RemovalTimer.Stop()
+		safeTimerStop(s.state.RemovalTimer)
 		s.state.RemovalTimer = nil
 	}
 	s.stateMutex.Unlock()
@@ -148,9 +150,6 @@ func (s *Session) Close() error {
 		}
 	}
 
-	if err := s.device.Close(); err != nil {
-		return fmt.Errorf("failed to close device: %w", err)
-	}
 	return nil
 }
 
@@ -182,29 +181,66 @@ func (s *Session) Resume() {
 }
 
 // pauseWithAck pauses polling and waits for acknowledgment
-func (s *Session) pauseWithAck(_ context.Context) error {
-	// Simplified to just use Pause() - no acknowledgment needed
-	s.Pause()
-	return nil
+func (s *Session) pauseWithAck(ctx context.Context) error {
+	// Check if context is already cancelled
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// Check if already paused to avoid redundant operations
+	if s.isPaused.Load() {
+		return nil
+	}
+
+	// Use atomic operation to set pause state safely
+	if !s.isPaused.CompareAndSwap(false, true) {
+		return nil // Another goroutine beat us to it
+	}
+
+	// Send pause signal with context-aware non-blocking send
+	select {
+	case s.pauseChan <- struct{}{}:
+		// Successfully sent pause signal, now wait for acknowledgment
+		select {
+		case <-s.ackChan:
+			// Polling goroutine has acknowledged the pause
+			return nil
+		case <-ctx.Done():
+			// Context cancelled, restore pause state and return error
+			s.isPaused.Store(false)
+			return ctx.Err()
+		}
+	case <-ctx.Done():
+		// Context cancelled, restore pause state and return error
+		s.isPaused.Store(false)
+		return ctx.Err()
+	default:
+		// Channel full or no receiver - that's OK since isPaused flag is set
+		return nil
+	}
 }
 
 // WriteToNextTag waits for the next tag detection and performs a write operation
 // This method blocks until a tag is detected or timeout occurs
+// sessionCtx controls session lifetime, writeCtx controls write operation lifetime
 func (s *Session) WriteToNextTag(
-	ctx context.Context, timeout time.Duration, writeFn func(context.Context, pn532.Tag) error,
+	sessionCtx context.Context,
+	writeCtx context.Context,
+	timeout time.Duration,
+	writeFn func(context.Context, pn532.Tag) error,
 ) error {
 	// Acquire write mutex to prevent concurrent writes
 	s.writeMutex.Lock()
 	defer s.writeMutex.Unlock()
 
 	// Pause polling to prevent interference with our write operation
-	if err := s.pauseWithAck(ctx); err != nil {
+	if err := s.pauseWithAck(sessionCtx); err != nil {
 		return fmt.Errorf("failed to pause polling: %w", err)
 	}
 	defer s.Resume()
 
-	// Create a timeout context for the polling loop
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	// Create a timeout context that cancels if either session or timeout expires
+	timeoutCtx, cancel := context.WithTimeout(sessionCtx, timeout)
 	defer cancel()
 
 	// Poll continuously until we find a tag or timeout
@@ -220,7 +256,7 @@ func (s *Session) WriteToNextTag(
 			if tagErr != nil {
 				return fmt.Errorf("failed to create tag: %w", tagErr)
 			}
-			return writeFn(timeoutCtx, tag)
+			return writeFn(writeCtx, tag)
 		}
 
 		if !errors.Is(err, ErrNoTagInPoll) {
@@ -243,13 +279,19 @@ func (s *Session) WriteToNextTag(
 
 // WriteToTag performs a thread-safe write operation to a detected tag
 // This method pauses polling during the write to prevent interference
-func (s *Session) WriteToTag(ctx context.Context, detectedTag *pn532.DetectedTag, writeFn func(pn532.Tag) error) error {
+// sessionCtx controls session lifetime, writeCtx controls write operation lifetime
+func (s *Session) WriteToTag(
+	sessionCtx context.Context,
+	writeCtx context.Context,
+	detectedTag *pn532.DetectedTag,
+	writeFn func(context.Context, pn532.Tag) error,
+) error {
 	// Acquire write mutex to prevent concurrent writes
 	s.writeMutex.Lock()
 	defer s.writeMutex.Unlock()
 
 	// Enhanced pause with acknowledgment - now requires context
-	if err := s.pauseWithAck(ctx); err != nil {
+	if err := s.pauseWithAck(sessionCtx); err != nil {
 		return fmt.Errorf("failed to pause polling: %w", err)
 	}
 	defer s.Resume()
@@ -260,8 +302,8 @@ func (s *Session) WriteToTag(ctx context.Context, detectedTag *pn532.DetectedTag
 		return fmt.Errorf("failed to create tag: %w", err)
 	}
 
-	// Execute the write function
-	return writeFn(tag)
+	// Execute the write function with the write context
+	return writeFn(writeCtx, tag)
 }
 
 // continuousPolling runs continuous InAutoPoll monitoring
@@ -314,7 +356,13 @@ func (s *Session) waitForNextPollOrPause(ctx context.Context, ticker *time.Ticke
 
 // handlePauseSignal sends acknowledgment and waits for resume
 func (s *Session) handlePauseSignal(ctx context.Context) error {
-	// Send acknowledgment
+	// Send acknowledgment to indicate polling is paused
+	select {
+	case s.ackChan <- struct{}{}:
+		// Successfully sent acknowledgment
+	default:
+		// Channel full or no receiver - continue anyway
+	}
 	// Wait for resume
 	return s.waitForResume(ctx)
 }

@@ -242,12 +242,13 @@ func runWriteMode(ctx context.Context, device *pn532.Device, cfg *config) error 
 	// Set a reasonable timeout for tag detection (30 seconds)
 	timeout := 30 * time.Second
 
-	// Track write result for proper feedback
-	var writeResult error
-	var writeSuccess bool
-
 	// Use WriteToNextTag to wait for a tag and write to it
-	err := session.WriteToNextTag(ctx, timeout, func(ctx context.Context, tag pn532.Tag) error {
+	// Note: Using the same context for both session and write operations in this simple example.
+	// For concurrent scenarios where you want independent cancellation control, create separate contexts:
+	//   sessionCtx := ctx
+	//   writeCtx, cancelWrite := context.WithCancel(ctx)
+	//   defer cancelWrite()
+	err := session.WriteToNextTag(ctx, ctx, timeout, func(ctx context.Context, tag pn532.Tag) error {
 		_, _ = fmt.Println("Tag detected! Writing text...")
 
 		// Create NDEF message with text record
@@ -262,29 +263,18 @@ func runWriteMode(ctx context.Context, device *pn532.Device, cfg *config) error 
 
 		// Write the NDEF message to the tag with context support
 		if err := tag.WriteNDEFWithContext(ctx, message); err != nil {
-			writeResult = fmt.Errorf("failed to write NDEF message: %w", err)
-			return writeResult
+			return fmt.Errorf("failed to write NDEF message: %w", err)
 		}
 
-		writeSuccess = true
+		_, _ = fmt.Printf("Successfully wrote text to tag: %q\n", cfg.writeText)
 		return nil
 	})
-	// Provide clear feedback on the write operation result
+	// Handle any errors from the write operation
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			_, _ = fmt.Println("Write operation cancelled.")
-			return fmt.Errorf("write operation cancelled: %w", err)
-		}
-		if writeResult != nil {
-			_, _ = fmt.Printf("Write failed: %v\n", writeResult)
 		}
 		return fmt.Errorf("write operation failed: %w", err)
-	}
-
-	if writeSuccess {
-		_, _ = fmt.Printf("Successfully wrote text to tag: %q\n", cfg.writeText)
-	} else {
-		_, _ = fmt.Println("Write operation completed but no write confirmation received.")
 	}
 
 	return nil
