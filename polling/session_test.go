@@ -391,13 +391,13 @@ func TestSafeTimerStop(t *testing.T) {
 
 	t.Run("HandlesAlreadyFiredTimer", func(t *testing.T) {
 		t.Parallel()
-		callbackExecuted := false
+		var callbackExecuted int32
 		timer := time.AfterFunc(1*time.Millisecond, func() {
-			callbackExecuted = true
+			atomic.StoreInt32(&callbackExecuted, 1)
 		})
 
 		time.Sleep(10 * time.Millisecond) // Let timer fire
-		assert.True(t, callbackExecuted, "Timer should have fired")
+		assert.Equal(t, int32(1), atomic.LoadInt32(&callbackExecuted), "Timer should have fired")
 
 		// Should not block or panic when stopping an already-fired timer
 		safeTimerStop(timer)
@@ -474,16 +474,25 @@ func TestSession_WriteToTagPausesBehavior(t *testing.T) {
 	// Session pause state changes
 	go func() {
 		defer wg.Done()
-		for {
-			if session.isPaused.Load() {
-				pauseDetected = true
-			}
-			time.Sleep(time.Millisecond)
+		timeout := time.After(5 * time.Second) // Add timeout to prevent infinite loop
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
 
-			// Break when write is complete
-			if pauseDetected && !session.isPaused.Load() {
-				resumeDetected = true
-				break
+		for {
+			select {
+			case <-timeout:
+				// Timeout reached, exit to prevent hanging
+				return
+			case <-ticker.C:
+				if session.isPaused.Load() {
+					pauseDetected = true
+				}
+
+				// Break when write is complete
+				if pauseDetected && !session.isPaused.Load() {
+					resumeDetected = true
+					return
+				}
 			}
 		}
 	}()
