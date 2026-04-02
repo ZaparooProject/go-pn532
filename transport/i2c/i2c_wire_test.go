@@ -796,3 +796,225 @@ func TestI2C_SetTimeoutAffectsReady(t *testing.T) {
 	err = transport.checkReady()
 	require.Error(t, err)
 }
+
+// --- Error Injection Tests ---
+// These test error paths in the I2C protocol handling by injecting
+// bad data or errors via a configurable mock bus.
+
+// errorI2CBus is a minimal i2c.Bus that returns configurable errors or bad data.
+type errorI2CBus struct {
+	readErr  error
+	writeErr error
+	readData []byte
+	closed   bool
+}
+
+//nolint:varnamelen // w,r are standard i2c.Bus.Tx parameter names
+func (e *errorI2CBus) Tx(_ uint16, w, r []byte) error {
+	if e.closed {
+		return errBusClosed
+	}
+	if len(w) > 0 && len(r) == 0 {
+		return e.writeErr
+	}
+	if len(w) == 0 && len(r) > 0 {
+		if e.readErr != nil {
+			return e.readErr
+		}
+		copy(r, e.readData)
+		return nil
+	}
+	return nil
+}
+
+func (*errorI2CBus) SetSpeed(_ physic.Frequency) error { return nil }
+func (e *errorI2CBus) Close() error                    { e.closed = true; return nil }
+func (*errorI2CBus) String() string                    { return "mock://error-i2c" }
+
+var _ i2c.Bus = (*errorI2CBus)(nil)
+
+func newErrorTransport(bus *errorI2CBus) *Transport {
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: bus}
+	return &Transport{
+		dev:     dev,
+		busName: "mock://error-i2c",
+		timeout: 50 * time.Millisecond,
+	}
+}
+
+func TestI2C_ReadResponseLength_BadPreamble(t *testing.T) {
+	// Return ready byte + bad preamble (should be 00 00 FF)
+	bus := &errorI2CBus{
+		readData: []byte{pn532Ready, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00},
+	}
+	transport := newErrorTransport(bus)
+
+	_, err := transport.readResponseLength(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, pn532.ErrFrameCorrupted)
+}
+
+func TestI2C_ReadResponseLength_BadLengthChecksum(t *testing.T) {
+	// Valid preamble but LEN + LCS != 0
+	bus := &errorI2CBus{
+		readData: []byte{pn532Ready, 0x00, 0x00, 0xFF, 0x05, 0x05, pn532ToHost},
+	}
+	transport := newErrorTransport(bus)
+
+	_, err := transport.readResponseLength(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, pn532.ErrFrameCorrupted)
+}
+
+func TestI2C_ReadResponseLength_BadTFI(t *testing.T) {
+	// Valid preamble & checksum but wrong TFI (should be 0xD5)
+	bus := &errorI2CBus{
+		readData: []byte{pn532Ready, 0x00, 0x00, 0xFF, 0x04, 0xFC, 0xAA},
+	}
+	transport := newErrorTransport(bus)
+
+	_, err := transport.readResponseLength(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, pn532.ErrFrameCorrupted)
+}
+
+// countingErrorI2CBus fails reads after N successful ones.
+type countingErrorI2CBus struct {
+	failErr   error
+	readyData []byte
+	errorI2CBus
+	failAfter int
+	readCount int
+}
+
+//nolint:varnamelen // w,r are standard i2c.Bus.Tx parameter names
+func (c *countingErrorI2CBus) Tx(_ uint16, w, r []byte) error {
+	if c.closed {
+		return errBusClosed
+	}
+	if len(w) > 0 && len(r) == 0 {
+		return c.writeErr
+	}
+	if len(w) == 0 && len(r) > 0 {
+		c.readCount++
+		if c.readCount > c.failAfter {
+			return c.failErr
+		}
+		// Return ready data for ready checks
+		if len(r) == 1 {
+			r[0] = c.readyData[0]
+		} else {
+			for idx := range r {
+				r[idx] = 0
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+func TestI2C_ReadResponseLength_HeaderReadFails(t *testing.T) {
+	bus := &countingErrorI2CBus{
+		readyData: []byte{pn532Ready},
+		failAfter: 1, // ready check succeeds, header read fails
+		failErr:   errors.New("i2c bus read error"),
+	}
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: bus}
+	transport := &Transport{
+		dev:     dev,
+		busName: "mock://error-i2c",
+		timeout: 50 * time.Millisecond,
+	}
+
+	_, err := transport.readResponseLength(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "i2c bus read error")
+}
+
+func TestI2C_WaitAck_Timeout(t *testing.T) {
+	// Bus always returns ready but never returns a valid ACK frame
+	bus := &errorI2CBus{
+		readData: []byte{pn532Ready, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+	}
+	transport := newErrorTransport(bus)
+	transport.timeout = 30 * time.Millisecond
+
+	err := transport.waitAck(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no ACK")
+}
+
+func TestI2C_WaitAck_ReadError(t *testing.T) {
+	// Ready check succeeds but ACK read fails
+	bus := &countingErrorI2CBus{
+		readyData: []byte{pn532Ready},
+		failAfter: 1, // ready check succeeds, ACK read fails
+		failErr:   errors.New("i2c ack read error"),
+	}
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: bus}
+	transport := &Transport{
+		dev:     dev,
+		busName: "mock://error-i2c",
+		timeout: 50 * time.Millisecond,
+	}
+
+	err := transport.waitAck(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ACK read failed")
+}
+
+func TestI2C_WaitAck_ContextCancelled(t *testing.T) {
+	// Bus always reports not ready — waitAck loops until context is cancelled
+	bus := &errorI2CBus{
+		readData: []byte{0x00}, // not ready
+	}
+	transport := newErrorTransport(bus)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err := transport.waitAck(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestI2C_SendAck_WriteError(t *testing.T) {
+	bus := &errorI2CBus{
+		writeErr: errors.New("i2c write failed"),
+	}
+	transport := newErrorTransport(bus)
+
+	err := transport.sendAck()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to send ACK")
+}
+
+func TestI2C_SendNack_WriteError(t *testing.T) {
+	bus := &errorI2CBus{
+		writeErr: errors.New("i2c write failed"),
+	}
+	transport := newErrorTransport(bus)
+
+	err := transport.sendNack()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to send NACK")
+}
+
+func TestI2C_CheckReady_AllRetriesFail(t *testing.T) {
+	// All reads fail — tests that checkReady exhausts retries and returns error
+	bus := &countingErrorI2CBus{
+		readyData: []byte{pn532Ready},
+		failAfter: 0, // fail every read
+		failErr:   errors.New("i2c transient error"),
+	}
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: bus}
+	transport := &Transport{
+		dev:     dev,
+		busName: "mock://error-i2c",
+		timeout: 500 * time.Millisecond,
+	}
+
+	err := transport.checkReady()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ready check failed")
+}
