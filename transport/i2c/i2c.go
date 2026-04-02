@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	// PN532 I2C address.
-	pn532WriteAddr = 0x48 // Write operation
-	pn532ReadAddr  = 0x49 // Read operation
+	// PN532 I2C 7-bit address. The datasheet lists 0x48/0x49 as 8-bit
+	// write/read addresses; periph.io expects the 7-bit form (0x48 >> 1 = 0x24)
+	// and handles the R/W bit internally.
+	pn532Addr = 0x24
 
 	// Protocol constants.
 	hostToPn532 = 0xD4
@@ -93,7 +94,7 @@ func New(busName string) (*Transport, error) {
 	}
 
 	// Create device with PN532 address and max frequency
-	dev := &i2c.Dev{Addr: pn532WriteAddr, Bus: bus}
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: bus}
 
 	// Set maximum frequency
 	_ = bus.SetSpeed(maxClockFreq) // Ignore error, continue with default speed
@@ -299,19 +300,18 @@ func (t *Transport) sendFrame(cmd byte, args []byte) error {
 func (t *Transport) waitAck(ctx context.Context) error {
 	deadline := time.Now().Add(t.timeout)
 
-	// Use buffer pool for ACK frame reading
-	ackBuf := frame.GetSmallBuffer(6)
+	// PN532 prepends a RDY status byte to every I2C read, so we read 7 bytes
+	// (1 RDY + 6 ACK) and skip the first byte for comparison.
+	ackBuf := frame.GetSmallBuffer(7)
 	defer frame.PutBuffer(ackBuf)
 
 	for time.Now().Before(deadline) {
-		// Check context
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// Check if PN532 is ready
 		if err := t.checkReady(); err != nil {
 			if err := sleepCtx(ctx, time.Millisecond); err != nil {
 				return err
@@ -319,12 +319,12 @@ func (t *Transport) waitAck(ctx context.Context) error {
 			continue
 		}
 
-		// Read ACK frame into pooled buffer
 		if err := t.dev.Tx(nil, ackBuf); err != nil {
 			return fmt.Errorf("I2C ACK read failed: %w", err)
 		}
 
-		if bytes.Equal(ackBuf, ackFrame) {
+		// Skip the leading RDY byte, compare remaining 6 bytes
+		if bytes.Equal(ackBuf[1:7], ackFrame) {
 			t.traceRX(ackFrame, "ACK")
 			return nil
 		}
@@ -347,12 +347,14 @@ func (t *Transport) sendAck() error {
 	return nil
 }
 
-// sendNack sends a NACK frame to the PN532
+// sendNack sends a NACK frame to the PN532, requesting retransmission.
 func (t *Transport) sendNack() error {
 	t.traceTX(nackFrame, "NACK")
 	if err := t.dev.Tx(nackFrame, nil); err != nil {
 		return fmt.Errorf("failed to send NACK: %w", err)
 	}
+	// ESPHome uses delay(10) after NACK — give PN532 time to prepare retransmit
+	time.Sleep(10 * time.Millisecond)
 	return nil
 }
 
@@ -401,133 +403,156 @@ func (t *Transport) receiveFrame(ctx context.Context) ([]byte, error) {
 	}
 }
 
-// receiveFrameAttempt performs a single frame receive attempt
+// receiveFrameAttempt reads a response using ESPHome's two-pass NACK pattern:
+// 1. Read a small header to determine response length
+// 2. Send NACK to request retransmission
+// 3. Read the full response with the exact known size
+// This avoids over-reading which causes clock-stretch bus lockups.
 func (t *Transport) receiveFrameAttempt(ctx context.Context) (data []byte, shouldRetry bool, err error) {
-	// Check context
 	select {
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
 	default:
 	}
 
-	// Check if PN532 is ready
-	if readyErr := t.checkReady(); readyErr != nil {
-		if sleepErr := sleepCtx(ctx, time.Millisecond); sleepErr != nil {
-			return nil, false, sleepErr
+	// PASS 1: Read header to determine response length.
+	// ESPHome reads 6 frame bytes (+ 1 RDY = 7 total) for the header.
+	respLen, err := t.readResponseLength(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Send NACK to request retransmission of the full response.
+	if err := t.sendNack(); err != nil {
+		return nil, false, err
+	}
+
+	// PASS 2: Read the full response with exact size.
+	// Total read: RDY(1) + preamble(3) + LEN(1) + LCS(1) + data(respLen) + DCS(1) + postamble(1)
+	// = 1 + 6 + respLen + 2 = respLen + 9
+	fullReadSize := respLen + 9
+
+	// delay(1) before read — matches ESPHome's read_data
+	time.Sleep(time.Millisecond)
+
+	// Poll for ready
+	deadline := time.Now().Add(t.timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		default:
 		}
-		// Device not ready, retry without error
-		return nil, true, nil
-	}
-
-	buf, actualLen, err := t.readFrameData()
-	if err != nil {
-		return nil, false, err
-	}
-	defer frame.PutBuffer(buf) // Ensure buffer is returned to pool
-
-	// Trace the raw response frame
-	if actualLen > 0 {
-		t.traceRX(buf[:actualLen], "Response")
-	}
-
-	off, err := t.findI2CFrameStart(buf, actualLen)
-	if err != nil {
-		return nil, false, err
-	}
-
-	frameLen, shouldRetry, err := t.validateI2CFrameLength(buf, off, actualLen)
-	if err != nil || shouldRetry {
-		return nil, shouldRetry, err
-	}
-
-	shouldRetry, err = t.validateI2CFrameChecksum(buf, off, frameLen)
-	if err != nil || shouldRetry {
-		return nil, shouldRetry, err
-	}
-
-	return t.extractI2CFrameData(buf, off, frameLen)
-}
-
-// readFrameData reads frame data from I2C using incremental reads
-// This fixes the critical bug where we were reading a fixed-size buffer without
-// knowing how much data was actually received from the PN532
-func (t *Transport) readFrameData() (buf []byte, actualLen int, err error) {
-	// PHASE 1: Read frame header to determine frame size
-	// Frame header structure: [preamble] [0x00] [0xFF] [LEN] [LCS] = 5 bytes minimum
-	// We read a bit more to get the TFI byte and start of data
-	headerSize := 32 // Read enough to get header + some data
-	headerBuf := frame.GetSmallBuffer(headerSize)
-
-	if err := t.dev.Tx(nil, headerBuf); err != nil {
-		frame.PutBuffer(headerBuf)
-		return nil, 0, fmt.Errorf("I2C frame header read failed: %w", err)
-	}
-
-	// Find frame start in header
-	frameStart := -1
-	for i := range headerSize - 1 {
-		if headerBuf[i] == 0x00 && headerBuf[i+1] == 0xFF {
-			frameStart = i + 2 // Point to length byte
+		if err := t.checkReady(); err == nil {
 			break
 		}
-	}
-
-	if frameStart == -1 || frameStart+1 >= headerSize {
-		frame.PutBuffer(headerBuf)
-		return nil, 0, &pn532.TransportError{
-			Op:        "readFrameData",
-			Port:      t.busName,
-			Err:       pn532.ErrFrameCorrupted,
-			Type:      pn532.ErrorTypeTransient,
-			Retryable: true,
+		if err := sleepCtx(ctx, 5*time.Millisecond); err != nil {
+			return nil, false, err
 		}
 	}
 
-	// Parse frame length
-	frameLen := int(headerBuf[frameStart])
-	lengthChecksum := headerBuf[frameStart+1]
+	buf := frame.GetBuffer(fullReadSize)
+	if err := t.dev.Tx(nil, buf); err != nil {
+		frame.PutBuffer(buf)
+		return nil, false, fmt.Errorf("I2C response read failed: %w", err)
+	}
+
+	// Skip RDY byte — frame data starts at index 1
+	frameData := buf[1:]
+	frameSize := fullReadSize - 1
+
+	if frameSize > 0 {
+		t.traceRX(frameData[:frameSize], "Response")
+	}
+
+	off, err := t.findI2CFrameStart(frameData, frameSize)
+	if err != nil {
+		frame.PutBuffer(buf)
+		return nil, false, err
+	}
+
+	frameLen, shouldRetry, err := t.validateI2CFrameLength(frameData, off, frameSize)
+	if err != nil || shouldRetry {
+		frame.PutBuffer(buf)
+		return nil, shouldRetry, err
+	}
+
+	shouldRetry, err = t.validateI2CFrameChecksum(frameData, off, frameLen)
+	if err != nil || shouldRetry {
+		frame.PutBuffer(buf)
+		return nil, shouldRetry, err
+	}
+
+	result, shouldRetry, err := t.extractI2CFrameData(frameData, off, frameLen)
+	frame.PutBuffer(buf)
+	return result, shouldRetry, err
+}
+
+// readResponseLength reads just the response header to determine the data length.
+// Matches ESPHome's read_response_length_() pattern.
+func (t *Transport) readResponseLength(ctx context.Context) (int, error) {
+	// delay(1) before read — matches ESPHome's read_data
+	time.Sleep(time.Millisecond)
+
+	// Poll for ready
+	deadline := time.Now().Add(t.timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+		if err := t.checkReady(); err == nil {
+			break
+		}
+		if err := sleepCtx(ctx, 5*time.Millisecond); err != nil {
+			return 0, err
+		}
+	}
+
+	// Read 7 bytes: 1 RDY + 6 frame header bytes
+	// Frame header: [preamble 00] [startcode 00 FF] [LEN] [LCS] [TFI D5]
+	hdr := frame.GetSmallBuffer(7)
+	defer frame.PutBuffer(hdr)
+
+	if err := t.dev.Tx(nil, hdr); err != nil {
+		return 0, fmt.Errorf("I2C response header read failed: %w", err)
+	}
+
+	// hdr[0]=RDY, hdr[1..6]=frame header
+	// Validate preamble and start code
+	if hdr[1] != 0x00 || hdr[2] != 0x00 || hdr[3] != 0xFF {
+		return 0, &pn532.TransportError{
+			Op: "readResponseLength", Port: t.busName,
+			Err: pn532.ErrFrameCorrupted, Type: pn532.ErrorTypeTransient, Retryable: true,
+		}
+	}
 
 	// Validate length checksum
-	if ((frameLen + int(lengthChecksum)) & 0xFF) != 0 {
-		frame.PutBuffer(headerBuf)
-		return nil, 0, &pn532.TransportError{
-			Op:        "readFrameData",
-			Port:      t.busName,
-			Err:       pn532.ErrFrameCorrupted,
-			Type:      pn532.ErrorTypeTransient,
-			Retryable: true,
+	fullLen := int(hdr[4])
+	lcs := hdr[5]
+	if ((fullLen + int(lcs)) & 0xFF) != 0 {
+		return 0, &pn532.TransportError{
+			Op: "readResponseLength", Port: t.busName,
+			Err: pn532.ErrFrameCorrupted, Type: pn532.ErrorTypeTransient, Retryable: true,
 		}
 	}
 
-	// PHASE 2: Calculate total frame size and check if we need more data
-	// Total frame: [preamble] [0x00] [0xFF] [LEN] [LCS] [TFI] [data...] [DCS] [postamble]
-	// = frameStart + 2 (LEN+LCS) + frameLen + 1 (DCS) + 1 (postamble)
-	totalFrameSize := frameStart + 2 + frameLen + 2
-
-	// If header buffer has all the data, use it
-	if totalFrameSize <= headerSize {
-		return headerBuf, totalFrameSize, nil
+	// Validate TFI byte
+	if hdr[6] != pn532ToHost {
+		return 0, &pn532.TransportError{
+			Op: "readResponseLength", Port: t.busName,
+			Err: pn532.ErrFrameCorrupted, Type: pn532.ErrorTypeTransient, Retryable: true,
+		}
 	}
 
-	// PHASE 3: Need to read more data - allocate bigger buffer and copy header
-	buf = frame.GetBuffer(totalFrameSize)
-	copy(buf, headerBuf[:headerSize])
-	frame.PutBuffer(headerBuf) // Return small buffer to pool
-
-	// Read remaining data
-	remainingSize := totalFrameSize - headerSize
-	remainingBuf := frame.GetSmallBuffer(remainingSize)
-	defer frame.PutBuffer(remainingBuf)
-
-	if err := t.dev.Tx(nil, remainingBuf); err != nil {
-		frame.PutBuffer(buf)
-		return nil, 0, fmt.Errorf("I2C remaining frame data read failed: %w", err)
+	// fullLen includes TFI byte, actual data length is fullLen - 1
+	dataLen := fullLen - 1
+	if fullLen == 0 {
+		dataLen = 0
 	}
 
-	// Copy remaining data to main buffer
-	copy(buf[headerSize:], remainingBuf[:remainingSize])
-
-	return buf, totalFrameSize, nil
+	return dataLen, nil
 }
 
 // findI2CFrameStart locates the frame start marker (0x00 0xFF)

@@ -116,7 +116,7 @@ var _ i2c.Bus = (*MockI2CBus)(nil)
 // newTestI2CTransport creates a Transport using the mock I2C bus.
 func newTestI2CTransport(sim *virt.VirtualPN532) *Transport {
 	mockBus := NewMockI2CBus(sim)
-	dev := &i2c.Dev{Addr: pn532WriteAddr, Bus: mockBus}
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: mockBus}
 	return &Transport{
 		dev:     dev,
 		busName: "mock://i2c",
@@ -500,7 +500,7 @@ var _ i2c.Bus = (*JitteryMockI2CBus)(nil)
 // newJitteryTestI2CTransport creates a Transport with jittery I2C bus.
 func newJitteryTestI2CTransport(sim *virt.VirtualPN532, config virt.JitterConfig) *Transport {
 	mockBus := NewJitteryMockI2CBus(sim, config)
-	dev := &i2c.Dev{Addr: pn532WriteAddr, Bus: mockBus}
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: mockBus}
 	// Use longer timeout on Windows due to less predictable goroutine scheduling
 	timeout := 500 * time.Millisecond
 	if runtime.GOOS == "windows" {

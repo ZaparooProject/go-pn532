@@ -1535,6 +1535,74 @@ func (t *NTAGTag) lockStaticPage(ctx context.Context, page uint8) error {
 	return nil
 }
 
+// MakeReadOnly permanently locks ALL user memory pages, making the tag read-only.
+// This is IRREVERSIBLE. After calling this method, no data can be written to the tag.
+// It sets all bits in the static lock bytes (pages 3-15) and dynamic lock bytes
+// (pages 16+), then sets the CC access byte to read-only (0x0F).
+//
+// The CC access byte is written last so that a partial failure (e.g., RF error during
+// dynamic lock write) does not misleadingly mark the tag as read-only when the hardware
+// lock bits are not fully set.
+func (t *NTAGTag) MakeReadOnly(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Set static lock bits (page 2, bytes 2-3) to lock pages 3-15
+	staticLock, err := t.ReadBlock(ctx, ntagPageStaticLock)
+	if err != nil {
+		return fmt.Errorf("%w (static lock bytes): %w", ErrTagReadFailed, err)
+	}
+	staticLock[2] = 0xFF
+	staticLock[3] = 0xFF
+	if writeErr := t.WriteBlock(ctx, ntagPageStaticLock, staticLock); writeErr != nil {
+		return fmt.Errorf("%w (static lock bytes): %w", ErrTagWriteFailed, writeErr)
+	}
+
+	// Determine dynamic lock page based on tag type
+	var dynLockPage uint8
+	switch t.tagType {
+	case NTAGType213:
+		dynLockPage = ntag213DynLock
+	case NTAGType215:
+		dynLockPage = ntag215DynLock
+	case NTAGType216:
+		dynLockPage = ntag216DynLock
+	case NTAGTypeUnknown:
+		return errors.New("unknown NTAG type for lock operation")
+	default:
+		return errors.New("unknown NTAG type for lock operation")
+	}
+
+	// Set dynamic lock bits (bytes 0-2) to lock all remaining pages
+	// Byte 3 is RFUI (reserved for future use) and must not be modified
+	dynLock, err := t.ReadBlock(ctx, dynLockPage)
+	if err != nil {
+		return fmt.Errorf("%w (dynamic lock bytes): %w", ErrTagReadFailed, err)
+	}
+	dynLock[0] = 0xFF
+	dynLock[1] = 0xFF
+	dynLock[2] = 0xFF
+	if err := t.WriteBlock(ctx, dynLockPage, dynLock); err != nil {
+		return fmt.Errorf("%w (dynamic lock bytes): %w", ErrTagWriteFailed, err)
+	}
+
+	// Set CC access byte to read-only LAST (page 3, byte 3)
+	// CC format: [Magic 0xE1] [Version] [Size] [Access]
+	// Access 0x00 = read/write, 0x0F = read-only (NFC Forum standard)
+	// Written last so partial failure doesn't misleadingly mark tag as read-only
+	ccData, err := t.ReadBlock(ctx, ntagPageCC)
+	if err != nil {
+		return fmt.Errorf("%w (capability container): %w", ErrTagReadFailed, err)
+	}
+	ccData[3] = 0x0F
+	if writeErr := t.WriteBlock(ctx, ntagPageCC, ccData); writeErr != nil {
+		return fmt.Errorf("%w (capability container): %w", ErrTagWriteFailed, writeErr)
+	}
+
+	return nil
+}
+
 // calculateStaticLockPosition calculates the byte and bit position for static locks
 func calculateStaticLockPosition(page uint8) (lockByte, lockBit byte) {
 	// Lock byte 0 (byte 2): bits 0-7 control pages 3-9, 15
