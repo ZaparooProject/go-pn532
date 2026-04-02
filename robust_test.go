@@ -556,7 +556,7 @@ func TestWriteNDEFWithRetry(t *testing.T) {
 	t.Run("Context cancellation during retry delay", func(t *testing.T) {
 		t.Parallel()
 
-		ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel called in goroutine below
+		ctx, cancel := context.WithCancel(context.Background())
 
 		var attempts int32
 		writeFunc := func(_ context.Context) error {

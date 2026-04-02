@@ -329,7 +329,6 @@ func TestSession_WriteToTag(t *testing.T) {
 
 		// Create separate contexts - session ctx stays active, write ctx gets cancelled
 		sessionCtx := context.Background()
-		//nolint:gosec // cancelWrite called inside write callback below
 		writeCtx, cancelWrite := context.WithCancel(context.Background())
 
 		detectedTag := createTestDetectedTag()
@@ -359,7 +358,6 @@ func TestSession_WriteToTag(t *testing.T) {
 		session := NewSession(device, nil)
 
 		// Create a context that will be cancelled before the stabilization delay completes
-		//nolint:gosec // cancelWrite called in goroutine below
 		writeCtx, cancelWrite := context.WithCancel(context.Background())
 
 		detectedTag := createTestDetectedTag()
@@ -1000,7 +998,6 @@ func TestSession_WriteToNextTag(t *testing.T) {
 
 		// Create separate contexts - session ctx stays active, write ctx gets cancelled
 		sessionCtx := context.Background()
-		//nolint:gosec // cancelWrite called inside write callback below
 		writeCtx, cancelWrite := context.WithCancel(context.Background())
 
 		writeCalled := false

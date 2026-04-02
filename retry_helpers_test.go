@@ -99,7 +99,7 @@ func TestWriteNDEFWithRetry_ContextCancelledBeforeAttempt(t *testing.T) {
 func TestWriteNDEFWithRetry_ContextCancelledDuringBackoff(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel called in goroutine below
+	ctx, cancel := context.WithCancel(context.Background())
 
 	var callCount atomic.Int32
 	writeFunc := func(_ context.Context) error {
