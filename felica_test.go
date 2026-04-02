@@ -83,7 +83,7 @@ func buildFeliCaRequestServiceResponse(idm []byte, nodeCount int) []byte {
 	feliCaResponse := make([]byte, 10+nodeCount*2)
 	feliCaResponse[0] = 0x03 // Request Service response code
 	copy(feliCaResponse[1:9], idm)
-	feliCaResponse[9] = byte(nodeCount)
+	feliCaResponse[9] = byte(nodeCount) //nolint:gosec // test helper with small values
 	// Node key versions (2 bytes each) - fill with zeros
 
 	return append([]byte{0x41, 0x00}, feliCaResponse...)

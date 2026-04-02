@@ -546,7 +546,7 @@ func (f *FeliCaTag) RequestService(ctx context.Context, serviceCodes []uint16) (
 	cmd = append(cmd, f.idm...)
 
 	// Node count (number of service codes)
-	cmd = append(cmd, byte(len(serviceCodes)))
+	cmd = append(cmd, byte(len(serviceCodes))) //nolint:gosec // FeliCa max 16 service codes
 
 	// Add service codes (2 bytes each, little endian)
 	for _, serviceCode := range serviceCodes {
@@ -628,7 +628,7 @@ func (f *FeliCaTag) writeNDEFBlocks(ctx context.Context, paddedData []byte) erro
 		if block >= 0xFFFE {
 			return fmt.Errorf("block index too large: %d", block)
 		}
-		blockIndex := uint16(block) + 1 //nolint:gosec // Already bounds-checked above
+		blockIndex := uint16(block) + 1
 		writeErr := f.WriteBlockExtended(ctx, blockIndex, blockData)
 		if writeErr != nil {
 			return fmt.Errorf("failed to write NDEF block %d: %w", block+1, writeErr)

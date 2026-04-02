@@ -2,6 +2,7 @@
 package i2c
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -20,24 +21,25 @@ import (
 var errBusClosed = errors.New("bus is closed")
 
 // MockI2CBus implements i2c.Bus interface backed by VirtualPN532.
+// Buffers simulator output so the I2C transport's two-pass NACK
+// retransmission pattern works correctly.
 type MockI2CBus struct {
-	sim       *virt.VirtualPN532
-	closed    bool
-	lastReady byte // For ready status simulation
+	sim     *virt.VirtualPN532
+	readBuf []byte
+	readPos int
+	closed  bool
 }
 
 // NewMockI2CBus creates a new mock I2C bus wrapping the VirtualPN532 simulator.
 func NewMockI2CBus(sim *virt.VirtualPN532) *MockI2CBus {
-	return &MockI2CBus{
-		sim:       sim,
-		lastReady: 0x00, // Not ready initially
-	}
+	return &MockI2CBus{sim: sim}
 }
 
 // Tx implements i2c.Bus.Tx - performs I2C transaction.
-// For PN532, we need to handle the ready status check and frame exchanges.
+// Handles ready status checks, frame writes, and the NACK retransmission
+// pattern used by the I2C transport's two-pass response reading.
 //
-//nolint:gocognit,gocyclo,revive,cyclop,varnamelen // Mock implementation requires complex logic to simulate PN532 behavior
+//nolint:gocognit,gocyclo,revive,cyclop,nestif,varnamelen // Mock simulates PN532 I2C protocol
 func (m *MockI2CBus) Tx(_ uint16, w, r []byte) error {
 	if m.closed {
 		return errBusClosed
@@ -45,17 +47,30 @@ func (m *MockI2CBus) Tx(_ uint16, w, r []byte) error {
 
 	// Handle ready status check (read-only with single byte)
 	if len(w) == 0 && len(r) == 1 {
-		// Check if simulator has data ready
-		if m.sim.HasPendingResponse() {
-			r[0] = pn532Ready // Ready
+		if m.readPos < len(m.readBuf) || m.sim.HasPendingResponse() {
+			r[0] = pn532Ready
 		} else {
-			r[0] = 0x00 // Not ready
+			r[0] = 0x00
 		}
 		return nil
 	}
 
-	// Handle write operation (sending frame to PN532)
+	// Handle write operation
 	if len(w) > 0 && len(r) == 0 {
+		// NACK: retransmit response from beginning (skip ACK)
+		if bytes.Equal(w, nackFrame) {
+			if len(m.readBuf) > len(ackFrame) {
+				m.readPos = len(ackFrame)
+			}
+			return nil
+		}
+		// ACK: no-op (acknowledgment only)
+		if bytes.Equal(w, ackFrame) {
+			return nil
+		}
+		// Command frame: pass to simulator, clear buffer
+		m.readBuf = nil
+		m.readPos = 0
 		_, err := m.sim.Write(w)
 		if err != nil {
 			return fmt.Errorf("mock i2c write: %w", err)
@@ -63,30 +78,31 @@ func (m *MockI2CBus) Tx(_ uint16, w, r []byte) error {
 		return nil
 	}
 
-	// Handle read operation (receiving frame from PN532)
+	// Handle read operation (prepends RDY byte like real PN532)
 	if len(w) == 0 && len(r) > 0 {
-		n, err := m.sim.Read(r)
-		if err != nil {
-			return fmt.Errorf("mock i2c read: %w", err)
+		// Buffer all simulator output on first read
+		if m.readBuf == nil && m.sim.HasPendingResponse() {
+			buf := make([]byte, 1024)
+			n, err := m.sim.Read(buf)
+			if err != nil {
+				return fmt.Errorf("mock i2c read: %w", err)
+			}
+			m.readBuf = make([]byte, n)
+			copy(m.readBuf, buf[:n])
+			m.readPos = 0
 		}
-		// Clear remaining bytes if we read less
-		for i := n; i < len(r); i++ {
-			r[i] = 0x00
-		}
-		return nil
-	}
 
-	// Handle combined write-read (not typically used by PN532)
-	if len(w) > 0 && len(r) > 0 {
-		_, err := m.sim.Write(w)
-		if err != nil {
-			return fmt.Errorf("mock i2c write: %w", err)
+		r[0] = pn532Ready
+		available := len(m.readBuf) - m.readPos
+		toCopy := len(r) - 1
+		if toCopy > available {
+			toCopy = available
 		}
-		n, err := m.sim.Read(r)
-		if err != nil {
-			return fmt.Errorf("mock i2c read: %w", err)
+		if toCopy > 0 {
+			copy(r[1:1+toCopy], m.readBuf[m.readPos:m.readPos+toCopy])
+			m.readPos += toCopy
 		}
-		for i := n; i < len(r); i++ {
+		for i := 1 + toCopy; i < len(r); i++ {
 			r[i] = 0x00
 		}
 		return nil
@@ -402,33 +418,35 @@ func TestI2C_Close(t *testing.T) {
 // like USB-I2C bridges (FT232H, MCP2221) with unpredictable timing.
 
 // JitteryMockI2CBus wraps a VirtualPN532 with jittery read behavior.
+// Like MockI2CBus, it buffers responses for NACK retransmission and
+// prepends RDY bytes to reads.
 type JitteryMockI2CBus struct {
-	jittery   *virt.BufferedJitteryConnection
-	sim       *virt.VirtualPN532
-	closed    bool
-	lastReady byte
+	jittery *virt.BufferedJitteryConnection
+	sim     *virt.VirtualPN532
+	readBuf []byte
+	readPos int
+	closed  bool
 }
 
 // NewJitteryMockI2CBus creates a jittery I2C bus for stress testing.
 func NewJitteryMockI2CBus(sim *virt.VirtualPN532, config virt.JitterConfig) *JitteryMockI2CBus {
 	return &JitteryMockI2CBus{
-		jittery:   virt.NewBufferedJitteryConnection(sim, config),
-		sim:       sim,
-		lastReady: 0x00,
+		jittery: virt.NewBufferedJitteryConnection(sim, config),
+		sim:     sim,
 	}
 }
 
-// Tx implements i2c.Bus.Tx with jittery read behavior.
+// Tx implements i2c.Bus.Tx with jittery read behavior and NACK support.
 //
-//nolint:gocognit,gocyclo,revive,cyclop,varnamelen // Mock implementation requires complex logic
+//nolint:gocognit,gocyclo,revive,cyclop,nestif,varnamelen // Mock simulates PN532 I2C protocol with jitter
 func (m *JitteryMockI2CBus) Tx(_ uint16, w, r []byte) error {
 	if m.closed {
 		return errBusClosed
 	}
 
-	// Handle ready status check (read-only with single byte)
+	// Handle ready status check
 	if len(w) == 0 && len(r) == 1 {
-		if m.sim.HasPendingResponse() {
+		if m.readPos < len(m.readBuf) || m.sim.HasPendingResponse() {
 			r[0] = pn532Ready
 		} else {
 			r[0] = 0x00
@@ -438,6 +456,17 @@ func (m *JitteryMockI2CBus) Tx(_ uint16, w, r []byte) error {
 
 	// Handle write operation
 	if len(w) > 0 && len(r) == 0 {
+		if bytes.Equal(w, nackFrame) {
+			if len(m.readBuf) > len(ackFrame) {
+				m.readPos = len(ackFrame)
+			}
+			return nil
+		}
+		if bytes.Equal(w, ackFrame) {
+			return nil
+		}
+		m.readBuf = nil
+		m.readPos = 0
 		_, err := m.jittery.Write(w)
 		if err != nil {
 			return fmt.Errorf("jittery i2c write: %w", err)
@@ -445,44 +474,37 @@ func (m *JitteryMockI2CBus) Tx(_ uint16, w, r []byte) error {
 		return nil
 	}
 
-	// Handle read operation with jittery behavior
+	// Handle read operation (prepends RDY byte)
 	if len(w) == 0 && len(r) > 0 {
-		totalRead := 0
-		for totalRead < len(r) {
-			n, err := m.jittery.Read(r[totalRead:])
-			if err != nil {
-				return fmt.Errorf("jittery i2c read: %w", err)
+		if m.readBuf == nil && m.sim.HasPendingResponse() {
+			buf := make([]byte, 1024)
+			totalRead := 0
+			for totalRead < len(buf) {
+				n, err := m.jittery.Read(buf[totalRead:])
+				if err != nil {
+					return fmt.Errorf("jittery i2c read: %w", err)
+				}
+				if n == 0 {
+					break
+				}
+				totalRead += n
 			}
-			if n == 0 {
-				break // No more data
-			}
-			totalRead += n
+			m.readBuf = make([]byte, totalRead)
+			copy(m.readBuf, buf[:totalRead])
+			m.readPos = 0
 		}
-		// Clear remaining bytes
-		for i := totalRead; i < len(r); i++ {
-			r[i] = 0x00
-		}
-		return nil
-	}
 
-	// Handle combined write-read
-	if len(w) > 0 && len(r) > 0 {
-		_, err := m.jittery.Write(w)
-		if err != nil {
-			return fmt.Errorf("jittery i2c write: %w", err)
+		r[0] = pn532Ready
+		available := len(m.readBuf) - m.readPos
+		toCopy := len(r) - 1
+		if toCopy > available {
+			toCopy = available
 		}
-		totalRead := 0
-		for totalRead < len(r) {
-			n, err := m.jittery.Read(r[totalRead:])
-			if err != nil {
-				return fmt.Errorf("jittery i2c read: %w", err)
-			}
-			if n == 0 {
-				break
-			}
-			totalRead += n
+		if toCopy > 0 {
+			copy(r[1:1+toCopy], m.readBuf[m.readPos:m.readPos+toCopy])
+			m.readPos += toCopy
 		}
-		for i := totalRead; i < len(r); i++ {
+		for i := 1 + toCopy; i < len(r); i++ {
 			r[i] = 0x00
 		}
 		return nil

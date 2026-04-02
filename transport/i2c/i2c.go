@@ -408,6 +408,8 @@ func (t *Transport) receiveFrame(ctx context.Context) ([]byte, error) {
 // 2. Send NACK to request retransmission
 // 3. Read the full response with the exact known size
 // This avoids over-reading which causes clock-stretch bus lockups.
+//
+//nolint:gocognit,revive,cyclop // hardware protocol handler with inherent complexity
 func (t *Transport) receiveFrameAttempt(ctx context.Context) (data []byte, shouldRetry bool, err error) {
 	select {
 	case <-ctx.Done():
@@ -423,8 +425,8 @@ func (t *Transport) receiveFrameAttempt(ctx context.Context) (data []byte, shoul
 	}
 
 	// Send NACK to request retransmission of the full response.
-	if err := t.sendNack(); err != nil {
-		return nil, false, err
+	if nackErr := t.sendNack(); nackErr != nil {
+		return nil, false, nackErr
 	}
 
 	// PASS 2: Read the full response with exact size.
@@ -443,18 +445,18 @@ func (t *Transport) receiveFrameAttempt(ctx context.Context) (data []byte, shoul
 			return nil, false, ctx.Err()
 		default:
 		}
-		if err := t.checkReady(); err == nil {
+		if readyErr := t.checkReady(); readyErr == nil {
 			break
 		}
-		if err := sleepCtx(ctx, 5*time.Millisecond); err != nil {
-			return nil, false, err
+		if sleepErr := sleepCtx(ctx, 5*time.Millisecond); sleepErr != nil {
+			return nil, false, sleepErr
 		}
 	}
 
 	buf := frame.GetBuffer(fullReadSize)
-	if err := t.dev.Tx(nil, buf); err != nil {
+	if txErr := t.dev.Tx(nil, buf); txErr != nil {
 		frame.PutBuffer(buf)
-		return nil, false, fmt.Errorf("I2C response read failed: %w", err)
+		return nil, false, fmt.Errorf("I2C response read failed: %w", txErr)
 	}
 
 	// Skip RDY byte — frame data starts at index 1

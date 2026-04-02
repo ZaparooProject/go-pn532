@@ -184,7 +184,7 @@ func loadConfigFile() []Config {
 	}
 
 	for _, path := range configPaths {
-		// #nosec G304 -- paths are hardcoded above, not user input
+		// #nosec G304,G703 -- paths are hardcoded above, not user input
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue

@@ -71,7 +71,7 @@ func RetryWithConfig(ctx context.Context, config *RetryConfig, retryFunc Retryab
 
 func setupRetryContext(ctx context.Context, config *RetryConfig) (context.Context, context.CancelFunc) {
 	if config.RetryTimeout > 0 {
-		return context.WithTimeout(ctx, config.RetryTimeout)
+		return context.WithTimeout(ctx, config.RetryTimeout) //nolint:gosec // cancel returned to caller who defers it
 	}
 	return ctx, func() {}
 }

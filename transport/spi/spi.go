@@ -260,7 +260,7 @@ func (t *Transport) SendCommand(ctx context.Context, cmd byte, args []byte) ([]b
 // sendFrame sends a command frame to the PN532
 func (t *Transport) sendFrame(cmd byte, args []byte) error {
 	// Calculate frame size
-	length := byte(len(args) + 2)                      // +2 for TFI and CMD
+	length := byte(len(args) + 2)                      //nolint:gosec // PN532 frames are max 265 bytes
 	frameSize := 3 + 1 + 1 + 1 + 1 + len(args) + 1 + 1 // preamble + len + lcs + tfi + cmd + args + dcs + postamble
 
 	// Use buffer pool for frame construction - major optimization

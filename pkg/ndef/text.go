@@ -57,7 +57,7 @@ func NewTextRecord(text, language string) *Record {
 
 	// Build payload: status byte + language code + text
 	payload := make([]byte, 1+len(language)+len(text))
-	payload[0] = byte(len(language)) // UTF-8, no UTF-16 flag
+	payload[0] = byte(len(language)) //nolint:gosec // capped at maxLanguageLength (63)
 	copy(payload[1:], language)
 	copy(payload[1+len(language):], text)
 
@@ -116,7 +116,7 @@ func EncodeTextPayload(text, language string) ([]byte, error) {
 	}
 
 	payload := make([]byte, 1+len(language)+len(text))
-	payload[0] = byte(len(language))
+	payload[0] = byte(len(language)) //nolint:gosec // capped above
 	copy(payload[1:], language)
 	copy(payload[1+len(language):], text)
 

@@ -27,7 +27,7 @@ import (
 // Frame building helper - constructs a valid PN532 command frame
 func buildCommandFrame(cmd byte, params []byte) []byte {
 	dataLen := 2 + len(params) // TFI + CMD + params
-	lcs := byte(0 - dataLen)
+	lcs := byte(0 - dataLen)   //nolint:gosec // intentional two's complement checksum
 
 	frameData := append([]byte{tfiHostToPN532, cmd}, params...)
 
@@ -39,7 +39,7 @@ func buildCommandFrame(cmd byte, params []byte) []byte {
 
 	frame := make([]byte, 0, 5+len(frameData)+2)
 	frame = append(frame, pn532Preamble, pn532StartCode1, pn532StartCode2)
-	frame = append(frame, byte(dataLen), lcs)
+	frame = append(frame, byte(dataLen), lcs) //nolint:gosec // PN532 frame length fits in byte
 	frame = append(frame, frameData...)
 	frame = append(frame, dcs, pn532Postamble)
 
@@ -70,7 +70,8 @@ func parseResponseFrame(t *testing.T, data []byte) (cmd byte, responseData []byt
 	lcs := data[offset+1]
 
 	// Validate length checksum
-	require.Equal(t, byte(0), (byte(frameLen)+lcs)&0xFF, "length checksum error")
+	lenByte := byte(frameLen) //nolint:gosec // intentional truncation for checksum
+	require.Equal(t, byte(0), (lenByte+lcs)&0xFF, "length checksum error")
 
 	// Extract frame data
 	frameData := data[offset+2 : offset+2+frameLen]
@@ -761,9 +762,9 @@ func TestVirtualPN532_InjectNACK(t *testing.T) {
 // Helper to build extended command frame for testing
 func buildExtendedCommandFrame(cmd byte, params []byte) []byte {
 	dataLen := 2 + len(params) // TFI + CMD + params
-	lenM := byte(dataLen >> 8)
+	lenM := byte(dataLen >> 8) //nolint:gosec // intentional truncation for extended frame
 	lenL := byte(dataLen & 0xFF)
-	lcs := byte(0 - int(lenM) - int(lenL))
+	lcs := byte(0 - int(lenM) - int(lenL)) //nolint:gosec // intentional two's complement checksum
 
 	frameData := append([]byte{tfiHostToPN532, cmd}, params...)
 

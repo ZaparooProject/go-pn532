@@ -483,7 +483,7 @@ func (v *VirtualPN532) parseFrame(data []byte) (resultData []byte, resultLen int
 	lcs := data[offset+1]
 
 	// Validate length checksum: LEN + LCS = 0x00 (§6.2.1.1)
-	if (byte(frameLen)+lcs)&0xFF != 0 {
+	if (byte(frameLen)+lcs)&0xFF != 0 { //nolint:gosec // intentional truncation for checksum validation
 		return nil, 0, errors.New("length checksum error")
 	}
 
@@ -530,7 +530,7 @@ func (*VirtualPN532) parseExtendedFrame(data []byte) (resultData []byte, resultL
 	lcs := data[6]
 
 	// Validate extended length checksum: LENM + LENL + LCS = 0x00
-	if (byte(lenM)+byte(lenL)+lcs)&0xFF != 0 {
+	if (byte(lenM)+byte(lenL)+lcs)&0xFF != 0 { //nolint:gosec // intentional truncation for checksum validation
 		return nil, 0, errors.New("extended length checksum error")
 	}
 
@@ -701,7 +701,7 @@ func (*VirtualPN532) buildFrame(frameData []byte) []byte {
 	}
 
 	// Calculate checksums
-	lcs := byte(0 - dataLen) // LEN + LCS = 0
+	lcs := byte(0 - dataLen) //nolint:gosec // intentional two's complement checksum
 
 	dcs := byte(0)
 	for _, b := range frameData {
@@ -720,9 +720,9 @@ func (*VirtualPN532) buildFrame(frameData []byte) []byte {
 
 func buildExtendedFrame(frameData []byte) []byte {
 	dataLen := len(frameData)
-	lenM := byte(dataLen >> 8)
+	lenM := byte(dataLen >> 8) //nolint:gosec // intentional truncation for extended frame
 	lenL := byte(dataLen & 0xFF)
-	lcs := byte(0 - int(lenM) - int(lenL))
+	lcs := byte(0 - int(lenM) - int(lenL)) //nolint:gosec // intentional two's complement checksum
 
 	dcs := byte(0)
 	for _, b := range frameData {
@@ -868,7 +868,7 @@ func (*VirtualPN532) buildTargetData(tg, brTy byte, tag *VirtualTag) []byte {
 		data := make([]byte, 0, 1+len(sensRes)+2+len(tag.UID))
 		data = append(data, tg)
 		data = append(data, sensRes...)
-		data = append(data, selRes, byte(len(tag.UID)))
+		data = append(data, selRes, byte(len(tag.UID))) //nolint:gosec // NFC UIDs are max 10 bytes
 		data = append(data, tag.UID...)
 		return data
 
@@ -1130,7 +1130,7 @@ func (v *VirtualPN532) handleGetGeneralStatus() ([]byte, error) {
 
 	if nbTg > 0 {
 		response = append(response,
-			byte(v.state.SelectedTarget), // Tg
+			byte(v.state.SelectedTarget), //nolint:gosec // PN532 target index is 1 or 2
 			0x00,                         // BrRx (106 kbps)
 			0x00,                         // BrTx (106 kbps)
 			0x00,                         // Type

@@ -176,7 +176,7 @@ func createContextForTest(tt contextTestCase) (context.Context, context.CancelFu
 		return ctx, cancel
 	}
 	// Timeout after specified duration
-	return context.WithTimeout(context.Background(), tt.contextTimeout)
+	return context.WithTimeout(context.Background(), tt.contextTimeout) //nolint:gosec // cancel returned to caller
 }
 
 // validateContextError checks if the error type and timing match expectations

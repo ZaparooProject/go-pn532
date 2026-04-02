@@ -835,7 +835,7 @@ func (t *NTAGTag) verifyWrittenData(ctx context.Context, expectedData []byte, st
 			return err
 		}
 
-		block := startBlock + uint8(i) //nolint:gosec // bounds checked above
+		block := startBlock + uint8(i)
 		readData, err := t.ReadBlock(ctx, block)
 		if err != nil {
 			return fmt.Errorf("verification read failed (block %d): %w", block, err)
@@ -1262,7 +1262,7 @@ func (t *NTAGTag) ProbeActualMemorySize(ctx context.Context, claimedBytes int) (
 		if lastPageIndex > 230 {
 			high = 230 // Cap at NTAG216 max
 		} else {
-			high = uint8(lastPageIndex) //nolint:gosec // bounds checked above
+			high = uint8(lastPageIndex)
 		}
 	}
 
@@ -1583,8 +1583,8 @@ func (t *NTAGTag) MakeReadOnly(ctx context.Context) error {
 	dynLock[0] = 0xFF
 	dynLock[1] = 0xFF
 	dynLock[2] = 0xFF
-	if err := t.WriteBlock(ctx, dynLockPage, dynLock); err != nil {
-		return fmt.Errorf("%w (dynamic lock bytes): %w", ErrTagWriteFailed, err)
+	if writeErr := t.WriteBlock(ctx, dynLockPage, dynLock); writeErr != nil {
+		return fmt.Errorf("%w (dynamic lock bytes): %w", ErrTagWriteFailed, writeErr)
 	}
 
 	// Set CC access byte to read-only LAST (page 3, byte 3)

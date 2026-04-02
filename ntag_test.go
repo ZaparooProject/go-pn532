@@ -515,8 +515,8 @@ func TestNTAG215BlockByBlockBufferOverflow(t *testing.T) {
 	// Mock subsequent block reads (blocks 5-67) with test data
 	for block := uint8(5); block < 68; block++ {
 		blockData := make([]byte, 18) // Response header + 16 bytes data
-		blockData[0] = 0x41           //nolint:gosec // Fixed size slice, index is safe
-		blockData[1] = 0x00           //nolint:gosec // Fixed size slice, index is safe
+		blockData[0] = 0x41
+		blockData[1] = 0x00
 		for i := 2; i < 18; i++ {
 			blockData[i] = block // Fill with block number for testing
 		}
@@ -1964,7 +1964,7 @@ func TestNTAGTag_GetCachedCapabilityContainer_ReturnsCopy(t *testing.T) {
 		"Modifying returned CC should not affect subsequent calls")
 }
 
-func TestNTAGTag_MakeReadOnly(t *testing.T) {
+func TestNTAGTag_MakeReadOnly(t *testing.T) { //nolint:funlen // table-driven test with many cases
 	t.Parallel()
 
 	// newReadSuccess creates a fresh success response for InDataExchange reads.
@@ -2105,9 +2105,9 @@ func TestNTAGTag_MakeReadOnly(t *testing.T) {
 		// (called by WriteBlock) auto-detects the type via DetectType, making the
 		// "unknown NTAG type" error path in MakeReadOnly unreachable in practice.
 		{
-			name:    "Context_Cancelled",
-			tagType: NTAGType213,
-			setupMock: func(_ *MockTransport) {},
+			name:          "Context_Cancelled",
+			tagType:       NTAGType213,
+			setupMock:     func(_ *MockTransport) {},
 			expectError:   true,
 			errorContains: "context canceled",
 		},
