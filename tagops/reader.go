@@ -52,7 +52,7 @@ func (t *TagOperations) ReadAll(ctx context.Context) ([]byte, error) {
 	switch t.tagType {
 	case pn532.TagTypeNTAG:
 		// Read from page 0 to last page
-		return t.readNTAGBlocks(ctx, 0, byte(t.totalPages-1))
+		return t.readNTAGBlocks(ctx, 0, byte(t.totalPages-1)) //nolint:gosec // totalPages <= 231 (NTAG216 max)
 	case pn532.TagTypeMIFARE:
 		if t.mifareInstance.IsMIFARE4K() {
 			// MIFARE Classic 4K has 255 blocks (0-254)
@@ -133,7 +133,7 @@ func (t *TagOperations) readNTAGBlocks(ctx context.Context, startBlock, endBlock
 func (t *TagOperations) validatePageRange(startBlock, endBlock byte) (validStart, validEnd byte) {
 	endPage := endBlock
 	if int(endPage) >= t.totalPages {
-		endPage = byte(t.totalPages - 1)
+		endPage = byte(t.totalPages - 1) //nolint:gosec // totalPages <= 231 (NTAG216 max)
 	}
 	return startBlock, endPage
 }

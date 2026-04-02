@@ -39,33 +39,41 @@ import (
 )
 
 type config struct {
-	writeText  string
-	devicePath string
-	debug      bool
-	stressTest bool
+	writeText     string
+	devicePath    string
+	bulkWriteFile string
+	debug         bool
+	stressTest    bool
+	loop          bool
 }
 
 // Package-level flag variables
 var (
-	flagWriteText  string
-	flagDevicePath string
-	flagDebug      bool
-	flagStressTest bool
+	flagWriteText     string
+	flagDevicePath    string
+	flagBulkWriteFile string
+	flagDebug         bool
+	flagStressTest    bool
+	flagLoop          bool
 )
 
 func init() {
 	flag.StringVar(&flagWriteText, "write", "", "Text to write to the next scanned tag (exits after write)")
 	flag.StringVar(&flagDevicePath, "device", "", "Device path (auto-detect if empty)")
+	flag.StringVar(&flagBulkWriteFile, "bulkwrite", "", "Bulk write mode: path to CSV file with name,url pairs")
 	flag.BoolVar(&flagDebug, "debug", false, "Enable debug output")
 	flag.BoolVar(&flagStressTest, "test", false, "Enable stress test mode for hardware validation")
+	flag.BoolVar(&flagLoop, "loop", false, "Continuously wait for readers, restart on disconnect (for bulk testing)")
 }
 
 func parseConfig() *config {
 	cfg := &config{
-		writeText:  flagWriteText,
-		devicePath: flagDevicePath,
-		debug:      flagDebug,
-		stressTest: flagStressTest,
+		writeText:     flagWriteText,
+		devicePath:    flagDevicePath,
+		bulkWriteFile: flagBulkWriteFile,
+		debug:         flagDebug,
+		stressTest:    flagStressTest,
+		loop:          flagLoop,
 	}
 
 	// Enable debug output only if --debug flag is explicitly set
@@ -459,6 +467,33 @@ func runDiagnostics(ctx context.Context, device *pn532.Device) {
 	_, _ = fmt.Println()
 }
 
+const loopRetryDelay = 2 * time.Second
+
+func runLoop(ctx context.Context, cfg *config) error {
+	readerNum := 0
+	for {
+		readerNum++
+		_, _ = fmt.Printf("\n=== Reader #%d — waiting for device... ===\n", readerNum)
+
+		err := run(ctx, cfg)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "Reader #%d error: %v\n", readerNum, err)
+		} else {
+			_, _ = fmt.Printf("Reader #%d session ended cleanly.\n", readerNum)
+		}
+
+		// Wait before retrying, but respect cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(loopRetryDelay):
+		}
+	}
+}
+
 func run(ctx context.Context, cfg *config) error {
 	// Connect to device
 	device, err := connectToDevice(ctx, cfg)
@@ -478,6 +513,10 @@ func run(ctx context.Context, cfg *config) error {
 	if cfg.stressTest {
 		// Stress test mode - multi-tag read/write validation
 		return runStressTestMode(ctx, device, cfg)
+	}
+	if cfg.bulkWriteFile != "" {
+		// Bulk write mode - write URLs from CSV and lock cards
+		return runBulkWriteMode(ctx, device, cfg)
 	}
 	if cfg.writeText != "" {
 		// Write mode - write text to next scanned tag and exit
@@ -520,7 +559,11 @@ func mainWithExitCode() int {
 	}()
 
 	// Run the main application logic
-	if err := run(ctx, cfg); err != nil {
+	runFn := run
+	if cfg.loop {
+		runFn = runLoop
+	}
+	if err := runFn(ctx, cfg); err != nil {
 		if errors.Is(err, context.Canceled) {
 			// User requested shutdown, exit cleanly
 			return 0

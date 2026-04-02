@@ -256,7 +256,7 @@ func (v *VirtualTag) SetNDEFText(text string) error {
 	ndefRecord = append(ndefRecord,
 		0xD1,                   // Header: MB=1, ME=1, CF=0, SR=1, IL=0, TNF=1 (Well Known)
 		0x01,                   // Type Length: 1 byte
-		byte(len(textBytes)+3), // Payload Length: language code (2) + encoding (1) + text
+		byte(len(textBytes)+3), //nolint:gosec // NDEF text records are small
 		0x54,                   // Type: "T" for Text
 		0x02,                   // Language code length
 		0x65, 0x6E,             // Language code: "en"
@@ -268,7 +268,7 @@ func (v *VirtualTag) SetNDEFText(text string) error {
 	ndefMessage := make([]byte, 0, 2+len(ndefRecord)+1)
 	ndefMessage = append(ndefMessage,
 		0x03,                  // NDEF Message TLV
-		byte(len(ndefRecord)), // Length
+		byte(len(ndefRecord)), //nolint:gosec // NDEF records fit in a byte
 	)
 	ndefMessage = append(ndefMessage, ndefRecord...)
 	ndefMessage = append(ndefMessage, 0xFE) // Terminator TLV

@@ -379,48 +379,48 @@ func formatVCard(contact *VCardContact) string {
 	if version == "" {
 		version = "3.0"
 	}
-	_, _ = buf.WriteString(fmt.Sprintf("VERSION:%s\r\n", version))
+	_, _ = fmt.Fprintf(&buf, "VERSION:%s\r\n", version)
 
 	// Name
 	if contact.FormattedName != "" {
-		_, _ = buf.WriteString(fmt.Sprintf("FN:%s\r\n", contact.FormattedName))
+		_, _ = fmt.Fprintf(&buf, "FN:%s\r\n", contact.FormattedName)
 	}
 	if contact.FirstName != "" || contact.LastName != "" {
-		_, _ = buf.WriteString(fmt.Sprintf("N:%s;%s;;;\r\n", contact.LastName, contact.FirstName))
+		_, _ = fmt.Fprintf(&buf, "N:%s;%s;;;\r\n", contact.LastName, contact.FirstName)
 	}
 
 	// Organization and title
 	if contact.Organization != "" {
-		_, _ = buf.WriteString(fmt.Sprintf("ORG:%s\r\n", contact.Organization))
+		_, _ = fmt.Fprintf(&buf, "ORG:%s\r\n", contact.Organization)
 	}
 	if contact.Title != "" {
-		_, _ = buf.WriteString(fmt.Sprintf("TITLE:%s\r\n", contact.Title))
+		_, _ = fmt.Fprintf(&buf, "TITLE:%s\r\n", contact.Title)
 	}
 
 	// Phone numbers
 	for phoneType, number := range contact.PhoneNumbers {
-		_, _ = buf.WriteString(fmt.Sprintf("TEL;TYPE=%s:%s\r\n", phoneType, number))
+		_, _ = fmt.Fprintf(&buf, "TEL;TYPE=%s:%s\r\n", phoneType, number)
 	}
 
 	// Email addresses
 	for emailType, email := range contact.EmailAddresses {
-		_, _ = buf.WriteString(fmt.Sprintf("EMAIL;TYPE=%s:%s\r\n", emailType, email))
+		_, _ = fmt.Fprintf(&buf, "EMAIL;TYPE=%s:%s\r\n", emailType, email)
 	}
 
 	// Addresses
 	for addrType, addr := range contact.Addresses {
-		_, _ = buf.WriteString(fmt.Sprintf("ADR;TYPE=%s:;;%s;%s;%s;%s;%s\r\n",
-			addrType, addr.Street, addr.City, addr.State, addr.PostalCode, addr.Country))
+		_, _ = fmt.Fprintf(&buf, "ADR;TYPE=%s:;;%s;%s;%s;%s;%s\r\n",
+			addrType, addr.Street, addr.City, addr.State, addr.PostalCode, addr.Country)
 	}
 
 	// URL
 	if contact.URL != "" {
-		_, _ = buf.WriteString(fmt.Sprintf("URL:%s\r\n", contact.URL))
+		_, _ = fmt.Fprintf(&buf, "URL:%s\r\n", contact.URL)
 	}
 
 	// Note
 	if contact.Note != "" {
-		_, _ = buf.WriteString(fmt.Sprintf("NOTE:%s\r\n", contact.Note))
+		_, _ = fmt.Fprintf(&buf, "NOTE:%s\r\n", contact.Note)
 	}
 
 	_, _ = buf.WriteString("END:VCARD\r\n")

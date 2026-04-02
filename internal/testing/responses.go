@@ -67,6 +67,7 @@ func BuildErrorResponse(cmd, errorCode byte) []byte {
 func buildNTAGDetectionResponse(uid []byte) []byte {
 	response := make([]byte, 0, 8+len(uid))
 	// Command + 1 target found + ATQA (Answer To Request Type A), SAK (Select Acknowledge), UID length
+	//nolint:gosec // NFC UIDs are max 10 bytes
 	response = append(response, 0xD5, 0x4B, 0x01, 0x01, 0x00, 0x44, 0x00, byte(len(uid)))
 	response = append(response, uid...)
 
@@ -77,6 +78,7 @@ func buildNTAGDetectionResponse(uid []byte) []byte {
 func buildMIFAREDetectionResponse(uid []byte, sak byte) []byte {
 	response := make([]byte, 0, 8+len(uid))
 	// Command + 1 target found + ATQA (Answer To Request Type A), SAK (Select Acknowledge), UID length
+	//nolint:gosec // NFC UIDs are max 10 bytes
 	response = append(response, 0xD5, 0x4B, 0x01, 0x01, 0x00, 0x04, sak, byte(len(uid)))
 	response = append(response, uid...)
 
@@ -87,6 +89,7 @@ func buildMIFAREDetectionResponse(uid []byte, sak byte) []byte {
 func buildGenericDetectionResponse(uid []byte) []byte {
 	response := make([]byte, 0, 8+len(uid))
 	// Command + 1 target found + ATQA (Answer To Request Type A), SAK (Select Acknowledge), UID length
+	//nolint:gosec // NFC UIDs are max 10 bytes
 	response = append(response, 0xD5, 0x4B, 0x01, 0x01, 0x00, 0x04, 0x00, byte(len(uid)))
 	response = append(response, uid...)
 

@@ -1,6 +1,6 @@
 module github.com/ZaparooProject/go-pn532
 
-go 1.24.11
+go 1.25.8
 
 require (
 	github.com/sasha-s/go-deadlock v0.3.6

@@ -515,8 +515,8 @@ func TestNTAG215BlockByBlockBufferOverflow(t *testing.T) {
 	// Mock subsequent block reads (blocks 5-67) with test data
 	for block := uint8(5); block < 68; block++ {
 		blockData := make([]byte, 18) // Response header + 16 bytes data
-		blockData[0] = 0x41           //nolint:gosec // Fixed size slice, index is safe
-		blockData[1] = 0x00           //nolint:gosec // Fixed size slice, index is safe
+		blockData[0] = 0x41
+		blockData[1] = 0x00
 		for i := 2; i < 18; i++ {
 			blockData[i] = block // Fill with block number for testing
 		}
@@ -1962,4 +1962,184 @@ func TestNTAGTag_GetCachedCapabilityContainer_ReturnsCopy(t *testing.T) {
 		"GetCachedCapabilityContainer should return a copy, not a reference to internal state")
 	assert.NotEqual(t, cc1[0], cc2[0],
 		"Modifying returned CC should not affect subsequent calls")
+}
+
+func TestNTAGTag_MakeReadOnly(t *testing.T) { //nolint:funlen // table-driven test with many cases
+	t.Parallel()
+
+	// newReadSuccess creates a fresh success response for InDataExchange reads.
+	// Each call allocates a new slice to prevent race conditions between parallel tests.
+	newReadSuccess := func() []byte {
+		return []byte{
+			0x41, 0x00, // header + success
+			0x00, 0x00, 0x00, 0x00, // 4 bytes data (all zeros)
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+		}
+	}
+	// writeSuccess is safe to share (never modified by code under test)
+	writeSuccess := []byte{0x41, 0x00}
+	// errorResp triggers a PN532 error (status byte 0x01 = timeout)
+	errorResp := []byte{0x41, 0x01}
+
+	// queueMakeReadOnlySuccess queues responses for the full MakeReadOnly flow.
+	// Call sequence: static read+write, dynamic read+write, CC read+write
+	// For NTAG215/216: extra canAccessPage probe read before dynamic write (page >= 45)
+	queueMakeReadOnlySuccess := func(mt *MockTransport, tagType NTAGType) {
+		mt.QueueResponses(0x40,
+			newReadSuccess(), writeSuccess, // static lock read + write
+			newReadSuccess(), // dynamic lock read
+		)
+		if tagType == NTAGType215 || tagType == NTAGType216 {
+			mt.QueueResponse(0x40, newReadSuccess()) // canAccessPage probe
+		}
+		mt.QueueResponses(0x40,
+			writeSuccess,                   // dynamic lock write
+			newReadSuccess(), writeSuccess, // CC read + write (last)
+		)
+	}
+
+	tests := []struct {
+		setupMock     func(*MockTransport)
+		name          string
+		errorContains string
+		tagType       NTAGType
+		expectError   bool
+	}{
+		{
+			name:    "Success_NTAG213",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				queueMakeReadOnlySuccess(mt, NTAGType213)
+			},
+		},
+		{
+			name:    "Success_NTAG215",
+			tagType: NTAGType215,
+			setupMock: func(mt *MockTransport) {
+				queueMakeReadOnlySuccess(mt, NTAGType215)
+			},
+		},
+		{
+			name:    "Success_NTAG216",
+			tagType: NTAGType216,
+			setupMock: func(mt *MockTransport) {
+				queueMakeReadOnlySuccess(mt, NTAGType216)
+			},
+		},
+		{
+			name:    "Static_Lock_Read_Fails",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				mt.QueueResponse(0x40, errorResp) // static lock read fails (first operation)
+			},
+			expectError:   true,
+			errorContains: "static lock bytes",
+		},
+		{
+			name:    "Static_Lock_Write_Fails",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				mt.QueueResponses(0x40,
+					newReadSuccess(), // static lock read succeeds
+					errorResp,        // static lock write fails
+				)
+			},
+			expectError:   true,
+			errorContains: "static lock bytes",
+		},
+		{
+			name:    "Dynamic_Lock_Read_Fails",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				mt.QueueResponses(0x40,
+					newReadSuccess(), writeSuccess, // static lock read + write
+					errorResp, // dynamic lock read fails
+				)
+			},
+			expectError:   true,
+			errorContains: "dynamic lock bytes",
+		},
+		{
+			name:    "Dynamic_Lock_Write_Fails",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				mt.QueueResponses(0x40,
+					newReadSuccess(), writeSuccess, // static lock read + write
+					newReadSuccess(), // dynamic lock read succeeds
+					errorResp,        // dynamic lock write fails
+				)
+			},
+			expectError:   true,
+			errorContains: "dynamic lock bytes",
+		},
+		{
+			name:    "CC_Read_Fails",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				mt.QueueResponses(0x40,
+					newReadSuccess(), writeSuccess, // static lock read + write
+					newReadSuccess(), writeSuccess, // dynamic lock read + write
+					errorResp, // CC read fails (last operation)
+				)
+			},
+			expectError:   true,
+			errorContains: "capability container",
+		},
+		{
+			name:    "CC_Write_Fails",
+			tagType: NTAGType213,
+			setupMock: func(mt *MockTransport) {
+				mt.QueueResponses(0x40,
+					newReadSuccess(), writeSuccess, // static lock read + write
+					newReadSuccess(), writeSuccess, // dynamic lock read + write
+					newReadSuccess(), // CC read succeeds
+					errorResp,        // CC write fails
+				)
+			},
+			expectError:   true,
+			errorContains: "capability container",
+		},
+		// Note: NTAGTypeUnknown is not tested here because validateWriteBoundary
+		// (called by WriteBlock) auto-detects the type via DetectType, making the
+		// "unknown NTAG type" error path in MakeReadOnly unreachable in practice.
+		{
+			name:          "Context_Cancelled",
+			tagType:       NTAGType213,
+			setupMock:     func(_ *MockTransport) {},
+			expectError:   true,
+			errorContains: "context canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			device, mockTransport := createMockDeviceWithTransport(t)
+			tt.setupMock(mockTransport)
+
+			tag := NewNTAGTag(device, []byte{0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, 0x00)
+			tag.tagType = tt.tagType
+
+			ctx := context.Background()
+			if tt.name == "Context_Cancelled" {
+				cancelledCtx, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelledCtx
+			}
+
+			err := tag.MakeReadOnly(ctx)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

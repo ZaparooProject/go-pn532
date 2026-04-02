@@ -43,7 +43,9 @@ cmd/*/*
 
 tmp/
 *.log
+*.csv
 
+.agent-shell/
 .claude/
 .serena/
 CLAUDE.md

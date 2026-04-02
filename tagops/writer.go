@@ -171,6 +171,31 @@ func (t *TagOperations) EraseBlocks(ctx context.Context, startBlock, endBlock by
 	return t.WriteBlocks(ctx, startBlock, zeros)
 }
 
+// ErrLockNotSupported indicates the tag type does not support locking.
+var ErrLockNotSupported = errors.New("locking not supported for this tag type")
+
+// MakeReadOnly permanently locks the tag, preventing any future writes.
+// This is IRREVERSIBLE for NTAG tags.
+// Returns ErrLockNotSupported for tag types that don't support locking (e.g., MIFARE).
+func (t *TagOperations) MakeReadOnly(ctx context.Context) error {
+	if t.tag == nil {
+		return ErrNoTag
+	}
+
+	switch t.tagType {
+	case pn532.TagTypeNTAG:
+		if err := t.ntagInstance.MakeReadOnly(ctx); err != nil {
+			return fmt.Errorf("failed to lock NTAG: %w", err)
+		}
+		return nil
+	case pn532.TagTypeMIFARE:
+		return ErrLockNotSupported
+	case pn532.TagTypeUnknown, pn532.TagTypeFeliCa, pn532.TagTypeAny:
+		return ErrUnsupportedTag
+	}
+	return ErrUnsupportedTag
+}
+
 // Format prepares the tag for NDEF use
 func (t *TagOperations) Format(ctx context.Context) error {
 	if t.tag == nil {

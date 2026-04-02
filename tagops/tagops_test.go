@@ -1017,3 +1017,44 @@ func TestTagOperations_GetCachedCapabilityContainer_ReturnsCC(t *testing.T) {
 	require.NotNil(t, cc, "GetCachedCapabilityContainer should return cached CC after init")
 	assert.Equal(t, expectedCC, cc, "Cached CC should match the CC read during DetectType")
 }
+
+// --- MakeReadOnly Tests ---
+
+func TestTagOperations_MakeReadOnly_NoTag(t *testing.T) {
+	ops := &TagOperations{
+		tag: nil,
+	}
+
+	err := ops.MakeReadOnly(context.TODO())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoTag)
+}
+
+func TestTagOperations_MakeReadOnly_MIFARE(t *testing.T) {
+	ops := &TagOperations{
+		tag:     &pn532.DetectedTag{UIDBytes: []byte{0x01}},
+		tagType: pn532.TagTypeMIFARE,
+	}
+
+	err := ops.MakeReadOnly(context.TODO())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLockNotSupported)
+}
+
+func TestTagOperations_MakeReadOnly_UnsupportedTypes(t *testing.T) {
+	unsupportedTypes := []pn532.TagType{
+		pn532.TagTypeUnknown,
+		pn532.TagTypeFeliCa,
+	}
+
+	for _, tagType := range unsupportedTypes {
+		ops := &TagOperations{
+			tag:     &pn532.DetectedTag{UIDBytes: []byte{0x01}},
+			tagType: tagType,
+		}
+
+		err := ops.MakeReadOnly(context.TODO())
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrUnsupportedTag)
+	}
+}

@@ -182,10 +182,11 @@ func (*SimulatorTransport) buildFrame(cmd byte, args []byte) []byte {
 	for _, b := range args {
 		sum += int(b)
 	}
-	dcs := byte(-sum) // Equivalent to (0x100 - sum) & 0xFF
+	dcs := byte(-sum) //nolint:gosec // intentional two's complement checksum
 
 	// Build frame: PREAMBLE + START_CODE + LEN + LCS + TFI + CMD + DATA + DCS + POSTAMBLE
 	frame := make([]byte, 0, 9+len(args))
+	//nolint:gosec // intentional truncation for PN532 frame length fields
 	frame = append(frame,
 		0x00, 0x00, 0xFF, // Preamble and start code
 		byte(dataLen),  // Length

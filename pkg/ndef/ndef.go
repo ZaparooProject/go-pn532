@@ -160,7 +160,7 @@ func (r *Record) Marshal() ([]byte, error) {
 	}
 
 	// Build header
-	header := []byte{flags, byte(len(typeBytes))}
+	header := []byte{flags, byte(len(typeBytes))} //nolint:gosec // NDEF type field is max 255 bytes per spec
 
 	// Payload length
 	if payloadLen <= shortRecordMaxLen {
@@ -174,7 +174,7 @@ func (r *Record) Marshal() ([]byte, error) {
 
 	// ID length (if present)
 	if len(idBytes) > 0 {
-		header = append(header, byte(len(idBytes)))
+		header = append(header, byte(len(idBytes))) //nolint:gosec // NDEF ID field is max 255 bytes per spec
 	}
 
 	// Assemble record
@@ -234,7 +234,7 @@ func (r *Record) Unmarshal(data []byte) (int, error) {
 		if offset >= len(data) {
 			return 0, ErrTruncatedRecord
 		}
-		idLen = int(data[offset])
+		idLen = int(data[offset]) //nolint:gosec // bounds checked at line 234
 		offset++
 	}
 
