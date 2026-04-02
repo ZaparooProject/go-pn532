@@ -709,3 +709,90 @@ func TestI2C_Jittery_AggressiveFragmentation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, byte(0x00), resp[1])
 }
+
+// --- Context and Timeout Tests ---
+
+func TestI2C_ContextCancelledBeforeSend(t *testing.T) {
+	sim := virt.NewVirtualPN532()
+	sim.SetFirmwareVersion(0x32, 0x01, 0x06, 0x07)
+	transport := newTestI2CTransport(sim)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := transport.SendCommand(ctx, 0x02, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestI2C_ContextCancelledDuringReceive(t *testing.T) {
+	sim := virt.NewVirtualPN532()
+	sim.SetFirmwareVersion(0x32, 0x01, 0x06, 0x07)
+
+	mockBus := NewMockI2CBus(sim)
+	dev := &i2c.Dev{Addr: pn532Addr, Bus: mockBus}
+	transport := &Transport{
+		dev:     dev,
+		busName: "mock://i2c",
+		timeout: 100 * time.Millisecond,
+	}
+
+	// Cancel context after a tiny delay — long enough for send+ACK
+	// but should interrupt during receiveFrame's ready polling.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Millisecond)
+	defer cancel()
+
+	// Clear the read buffer after ACK is consumed so receiveFrame
+	// has nothing to read and must poll until context expires.
+	mockBus.readBuf = nil
+
+	_, err := transport.SendCommand(ctx, 0x02, nil)
+	require.Error(t, err)
+}
+
+func TestI2C_SendFrameDataTooLarge(t *testing.T) {
+	sim := virt.NewVirtualPN532()
+	transport := newTestI2CTransport(sim)
+
+	// Send args that would make dataLen > 255 (2 + len(args) > 255)
+	bigArgs := make([]byte, 254)
+	err := transport.sendFrame(0x02, bigArgs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "data too large")
+}
+
+func TestI2C_CheckReadyNotReady(t *testing.T) {
+	sim := virt.NewVirtualPN532()
+	transport := newTestI2CTransport(sim)
+	transport.timeout = 20 * time.Millisecond
+
+	// No command sent, so simulator has no pending response — checkReady should fail
+	err := transport.checkReady()
+	require.Error(t, err)
+}
+
+func TestI2C_MultipleCommandsSequential(t *testing.T) {
+	sim := virt.NewVirtualPN532()
+	sim.SetFirmwareVersion(0x32, 0x01, 0x06, 0x07)
+	transport := newTestI2CTransport(sim)
+
+	// Send same command twice to verify buffer reset between commands
+	for range 3 {
+		resp, err := transport.SendCommand(context.Background(), 0x02, nil)
+		require.NoError(t, err)
+		assert.Len(t, resp, 5)
+		assert.Equal(t, byte(0x03), resp[0])
+	}
+}
+
+func TestI2C_SetTimeoutAffectsReady(t *testing.T) {
+	sim := virt.NewVirtualPN532()
+	transport := newTestI2CTransport(sim)
+
+	// Very short timeout should cause ready check to fail quickly
+	err := transport.SetTimeout(5 * time.Millisecond)
+	require.NoError(t, err)
+
+	err = transport.checkReady()
+	require.Error(t, err)
+}
