@@ -52,7 +52,7 @@ jobs:
         zip pn532-reader-${{ matrix.goos }}-${{ matrix.goarch }}.zip pn532-reader${{ matrix.suffix }}
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: pn532-reader-${{ matrix.goos }}-${{ matrix.goarch }}
         path: dist/*.zip
