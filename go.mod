@@ -6,7 +6,7 @@ require (
 	github.com/sasha-s/go-deadlock v0.3.6
 	github.com/stretchr/testify v1.11.1
 	go.bug.st/serial v1.6.4
-	golang.org/x/sys v0.35.0
+	golang.org/x/sys v0.42.0
 	periph.io/x/conn/v3 v3.7.2
 	periph.io/x/host/v3 v3.8.5
 )
