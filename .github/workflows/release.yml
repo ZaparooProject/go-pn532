@@ -31,10 +31,10 @@ jobs:
             suffix: '.exe'
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
       with:
         go-version-file: go.mod
 
@@ -52,7 +52,7 @@ jobs:
         zip pn532-reader-${{ matrix.goos }}-${{ matrix.goarch }}.zip pn532-reader${{ matrix.suffix }}
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
       with:
         name: pn532-reader-${{ matrix.goos }}-${{ matrix.goarch }}
         path: dist/*.zip
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
       with:
         path: artifacts
         merge-multiple: true
@@ -71,7 +71,7 @@ jobs:
       run: find artifacts -type f
 
     - name: Create Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
       with:
         files: artifacts/**/*.zip
         generate_release_notes: true
