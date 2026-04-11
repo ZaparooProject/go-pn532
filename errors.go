@@ -57,7 +57,17 @@ var (
 	ErrTagEmptyData            = errors.New("tag detected but returned empty data")
 	ErrTagDataCorrupt          = errors.New("tag data appears corrupted")
 	ErrTagUnreliable           = errors.New("tag readings are inconsistent")
+	ErrTagIncompatible         = errors.New("tag is incompatible with NDEF formatting")
 	ErrWriteVerificationFailed = errors.New("write verification failed: data mismatch")
+
+	// Tag protocol-level classifications. These categorise the underlying
+	// PN532 error code so callers can branch on the cause of a failure via
+	// errors.Is without parsing raw error codes. They are typically chained
+	// alongside a higher-level sentinel (e.g. ErrTagIncompatible) so the
+	// error chain carries both "what operation failed" and "why".
+	ErrTagTimeout      = errors.New("tag timeout")              // PN532 0x01
+	ErrTagDataMismatch = errors.New("tag data format mismatch") // PN532 0x13
+	ErrTagInvalidState = errors.New("tag in invalid state")     // PN532 0x27
 
 	// Data errors - not retryable
 	ErrInvalidParameter = errors.New("invalid parameter")
