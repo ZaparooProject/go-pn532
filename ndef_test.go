@@ -246,6 +246,22 @@ func TestParseNDEFMessage(t *testing.T) {
 			expectError:   false,
 			expectedCount: 0, // Empty NDEF = no records
 		},
+		{
+			// Regression for issue #51: tags written by other NFC tools or with
+			// leftover data from prior writes commonly have padding past ME.
+			// The parser must stop at ME and return the single valid record.
+			name: "Trailing_Padding_After_ME",
+			setupData: func() []byte {
+				return []byte{
+					0x03, 0x07,
+					0xD1, 0x01, 0x01, 0x54, 0x02,
+					0x00, 0x00,
+					0xFE,
+				}
+			},
+			expectError:   false,
+			expectedCount: 1,
+		},
 	}
 
 	for _, tt := range tests {
