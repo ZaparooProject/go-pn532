@@ -229,6 +229,14 @@ func validateNDEFStructure(data []byte) error {
 
 		recordCount++
 		pos += consumed
+
+		// Stop at ME flag. Any trailing bytes inside the TLV length window are
+		// padding or leftover data from prior writes by other NFC tools, and
+		// real-world tags commonly have this pattern. The NFC Forum spec treats
+		// ME as the logical end of the message regardless of remaining bytes.
+		if state.lastRecordSeen {
+			break
+		}
 	}
 
 	return validateMessageCompleteness(state)

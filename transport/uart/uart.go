@@ -131,9 +131,16 @@ func New(portName string) (*Transport, error) {
 }
 
 // sleepCtx performs a context-aware sleep. Returns ctx.Err() if context is cancelled.
+// Uses a named timer that is explicitly stopped on cancellation so the underlying
+// runtime timer can be released immediately rather than lingering until it fires.
 func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
-	case <-time.After(d):
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -142,8 +149,10 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // handleNilPort handles the case when port is nil (e.g., in tests).
 func (*Transport) handleNilPort(ctx context.Context) error {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
 	select {
-	case <-time.After(100 * time.Millisecond):
+	case <-timer.C:
 		return errors.New("simulated UART error: no port available")
 	case <-ctx.Done():
 		return ctx.Err()

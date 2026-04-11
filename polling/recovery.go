@@ -80,10 +80,12 @@ func (r *DefaultRecoverer) AttemptRecovery(ctx context.Context) error {
 
 	for attempt := range r.maxAttempts {
 		if attempt > 0 {
+			timer := time.NewTimer(r.backoff)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(r.backoff):
+			case <-timer.C:
 			}
 		}
 

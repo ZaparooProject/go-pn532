@@ -89,7 +89,17 @@ func NewSession(device *pn532.Device, config *Config) *Session {
 	return session
 }
 
-// Start begins continuous monitoring for cards
+// Start begins continuous monitoring for cards. It blocks until ctx is cancelled
+// or an unrecoverable error occurs.
+//
+// Callers must:
+//  1. Run Start in a dedicated goroutine.
+//  2. Track that goroutine (for example with a sync.WaitGroup).
+//  3. On shutdown, cancel the context, call Close, then wait for the goroutine.
+//
+// Start returns promptly when ctx is cancelled during normal polling. During the
+// initial hardware configuration it is bounded by startInitTimeout so a wedged
+// transport cannot delay Start's exit indefinitely.
 func (s *Session) Start(ctx context.Context) error {
 	return s.continuousPolling(ctx)
 }
@@ -236,12 +246,16 @@ func (s *Session) pauseWithAck(ctx context.Context) error {
 	// Send pause signal with context-aware non-blocking send
 	select {
 	case s.pauseChan <- struct{}{}:
-		// Successfully sent pause signal, now wait for acknowledgment with timeout
+		// Successfully sent pause signal, now wait for acknowledgment with timeout.
+		// Use a named timer so cancellation releases the underlying runtime timer
+		// immediately rather than lingering until it fires.
+		ackTimer := time.NewTimer(100 * time.Millisecond)
+		defer ackTimer.Stop()
 		select {
 		case <-s.ackChan:
 			// Polling goroutine has acknowledged the pause
 			return nil
-		case <-time.After(100 * time.Millisecond):
+		case <-ackTimer.C:
 			// No acknowledgment received - likely no polling loop running
 			// This is OK for testing scenarios, pause state is already set
 			return nil
@@ -273,10 +287,12 @@ func (s *Session) executeWriteToTag(
 	// This prevents error 0x27 ("wrong context") which occurs when the user is
 	// still positioning the card as the write triggers. The RF field becomes
 	// unstable during movement, causing the PN532 to lose target selection.
+	stabilizationTimer := time.NewTimer(writeStabilizationDelay)
 	select {
 	case <-writeCtx.Done():
+		stabilizationTimer.Stop()
 		return writeCtx.Err()
-	case <-time.After(writeStabilizationDelay):
+	case <-stabilizationTimer.C:
 	}
 
 	// Use GetDevice() to get the current device reference (may be updated after recovery)
@@ -417,19 +433,40 @@ func (s *Session) continuousPolling(ctx context.Context) error {
 	return s.runPollingLoop(ctx, s.executeSinglePollingCycle)
 }
 
-// runPollingLoop is the generic polling loop used by both single and multi-tag modes
-func (s *Session) runPollingLoop(ctx context.Context, cycleFunc func(context.Context) error) error {
-	// Configure PN532 hardware polling retries to reduce host-side polling frequency
-	// This tells the PN532 to retry detection internally before returning to the host
-	if err := s.device.SetPollingRetries(ctx, s.config.HardwareTimeoutRetries); err != nil {
+// startInitTimeout caps how long Session.Start will spend configuring the
+// PN532 before the polling loop begins. A wedged transport must not block
+// Start's goroutine past this bound.
+const startInitTimeout = 5 * time.Second
+
+// configureInitialHardware runs the one-time hardware setup that Start performs
+// before entering the polling loop. Both commands are bounded by startInitTimeout
+// so cancellation during Start's first two I/O calls is observed promptly even
+// if the transport is unresponsive.
+func (s *Session) configureInitialHardware(ctx context.Context) error {
+	initCtx, cancel := context.WithTimeout(ctx, startInitTimeout)
+	defer cancel()
+
+	if err := s.device.SetPollingRetries(initCtx, s.config.HardwareTimeoutRetries); err != nil {
 		return fmt.Errorf("failed to configure hardware polling retries: %w", err)
 	}
 
-	// Set device timeout to match hardware retries plus buffer
-	// Each retry is ~150ms, plus 1s buffer for host/driver overhead
+	// Set device timeout to match hardware retries plus buffer.
+	// Each retry is ~150ms, plus 1s buffer for host/driver overhead.
 	hwTimeout := time.Duration(s.config.HardwareTimeoutRetries)*150*time.Millisecond + time.Second
 	if err := s.device.SetTimeout(hwTimeout); err != nil {
 		return fmt.Errorf("failed to set device timeout: %w", err)
+	}
+	return nil
+}
+
+// runPollingLoop is the generic polling loop used by both single and multi-tag modes
+func (s *Session) runPollingLoop(ctx context.Context, cycleFunc func(context.Context) error) error {
+	// Bound the initial hardware configuration with a per-start timeout so a
+	// sluggish or unresponsive transport cannot delay Start's exit indefinitely.
+	// This keeps the goroutine that runs Start honest about cancellation even
+	// when the hardware is wedged on its first command.
+	if err := s.configureInitialHardware(ctx); err != nil {
+		return err
 	}
 
 	ticker := time.NewTicker(s.config.PollInterval)
