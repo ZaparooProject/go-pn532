@@ -18,6 +18,7 @@ package pn532
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1132,6 +1133,174 @@ func TestMIFARETag_FormatForNDEF(t *testing.T) {
 			checkMIFARETagError(t, err, tt.expectError, tt.errorContains)
 		})
 	}
+}
+
+// --- Issue #49 regression tests: Mifare Classic partial-format + classification ---
+
+func TestClassifyFormatError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		err      error
+		name     string
+		contains string
+	}{
+		{
+			name:     "timeout_0x01",
+			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x01},
+			contains: "write timed out",
+		},
+		{
+			name:     "dataformat_mismatch_0x13",
+			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x13},
+			contains: "non-standard MIFARE variant or clone",
+		},
+		{
+			name:     "auth_failed_0x14",
+			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x14},
+			contains: "authentication failed",
+		},
+		{
+			name:     "wrong_context_0x27",
+			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x27},
+			contains: "tag state invalid",
+		},
+		{
+			name:     "unknown_pn532_code",
+			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x99},
+			contains: "unknown format error",
+		},
+		{
+			name: "wrapped_pn532_error",
+			err: fmt.Errorf("tag write failed (block 7): %w",
+				&PN532Error{Command: "InDataExchange", ErrorCode: 0x13}),
+			contains: "non-standard MIFARE variant or clone",
+		},
+		{
+			name:     "non_pn532_error",
+			err:      errors.New("some other error"),
+			contains: "unknown format error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyFormatError(tt.err)
+			assert.Contains(t, got, tt.contains,
+				"classifyFormatError should classify error into user-friendly text")
+		})
+	}
+}
+
+func TestMIFARETag_ValidatePartialFormatCapacity(t *testing.T) {
+	t.Parallel()
+
+	tag, _ := setupMIFARETagTest(t, func(_ *MockTransport) {})
+
+	tests := []struct {
+		name          string
+		dataLen       int
+		usableSectors uint8
+		wantErr       bool
+	}{
+		{
+			name:          "no_cap_means_always_ok",
+			dataLen:       4096,
+			usableSectors: 0,
+			wantErr:       false,
+		},
+		{
+			name:          "one_sector_fits_small_ndef",
+			dataLen:       40, // fits in 3 data blocks (48 bytes)
+			usableSectors: 1,
+			wantErr:       false,
+		},
+		{
+			name:          "one_sector_exactly_48_bytes",
+			dataLen:       48,
+			usableSectors: 1,
+			wantErr:       false,
+		},
+		{
+			name:          "one_sector_overflow",
+			dataLen:       49,
+			usableSectors: 1,
+			wantErr:       true,
+		},
+		{
+			name:          "two_sectors_fits_96_bytes",
+			dataLen:       96,
+			usableSectors: 2,
+			wantErr:       false,
+		},
+		{
+			name:          "two_sectors_overflow",
+			dataLen:       97,
+			usableSectors: 2,
+			wantErr:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := make([]byte, tt.dataLen)
+			err := tag.validatePartialFormatCapacity(data, tt.usableSectors)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrTagIncompatible,
+					"over-capacity payload must wrap ErrTagIncompatible")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestMIFARETag_FormatForNDEFWithKey_NoAccessibleSector1 verifies that when
+// sector 1 cannot be authenticated with either the blank key or the NDEF key
+// (because the mock rejects every InDataExchange command), formatForNDEFWithKey
+// returns (0, ErrTagIncompatible wrapped) rather than a silent success or an
+// opaque auth error.
+func TestMIFARETag_FormatForNDEFWithKey_NoAccessibleSector1(t *testing.T) {
+	t.Parallel()
+
+	tag, mt := setupMIFARETagTest(t, func(_ *MockTransport) {})
+	tag.SetConfig(testMIFAREConfig())
+	// Reject every InDataExchange command so blank-key and NDEF-key auth both
+	// fail on sector 1. classifyFormatError should fall through to "unknown
+	// format error" because the inner error is not a *PN532Error.
+	mt.SetError(0x40, errors.New("auth refused"))
+
+	blankKey := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+	contiguous, err := tag.formatForNDEFWithKey(context.Background(), blankKey)
+
+	require.Error(t, err)
+	assert.Equal(t, uint8(0), contiguous,
+		"no sectors should have been counted as formatted")
+	assert.ErrorIs(t, err, ErrTagIncompatible,
+		"sector 1 failure must surface as ErrTagIncompatible")
+}
+
+// TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorSurfacesClassification asserts
+// that when sector 1 fails with a *PN532Error carrying a known code (0x13
+// dataformat mismatch, the failure mode reported in issue #49), the wrapped
+// error contains the user-facing classification string.
+func TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorSurfacesClassification(t *testing.T) {
+	t.Parallel()
+
+	tag, mt := setupMIFARETagTest(t, func(_ *MockTransport) {})
+	tag.SetConfig(testMIFAREConfig())
+	mt.SetError(0x40, &PN532Error{Command: "InDataExchange", ErrorCode: 0x13})
+
+	blankKey := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+	_, err := tag.formatForNDEFWithKey(context.Background(), blankKey)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrTagIncompatible)
+	assert.Contains(t, err.Error(), "non-standard MIFARE variant or clone",
+		"classified error message should be surfaced through the error chain")
 }
 
 func TestMIFARETag_WriteNDEFAlternative(t *testing.T) {

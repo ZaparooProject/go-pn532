@@ -696,13 +696,26 @@ func (t *MIFARETag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 		return err
 	}
 
-	if err := t.validateNDEFSize(data); err != nil {
-		return err
+	if sizeErr := t.validateNDEFSize(data); sizeErr != nil {
+		return sizeErr
 	}
 
+	// A value of 0 means "no sector cap" — either the tag was already formatted
+	// (authenticateWithKeyFallback found the NDEF key on sector 1) or we are
+	// still going to format it below. After formatting, this becomes the number
+	// of contiguous sectors that were successfully re-keyed, which bounds how
+	// much space we can safely use.
+	var usableSectors uint8
 	if authResult.isBlank {
-		if err := t.formatForNDEFWithKey(ctx, authResult.blankKey); err != nil {
-			return fmt.Errorf("failed to format tag for NDEF: %w", err)
+		formatted, formatErr := t.formatForNDEFWithKey(ctx, authResult.blankKey)
+		if formatErr != nil {
+			return fmt.Errorf("failed to format tag for NDEF: %w", formatErr)
+		}
+		usableSectors = formatted
+		// Reject writes that exceed the actually-formatted capacity rather
+		// than letting writeNDEFData fail partway through.
+		if capErr := t.validatePartialFormatCapacity(data, usableSectors); capErr != nil {
+			return capErr
 		}
 	}
 
@@ -710,7 +723,7 @@ func (t *MIFARETag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 		return err
 	}
 
-	if err := t.writeNDEFData(ctx, data); err != nil {
+	if err := t.writeNDEFData(ctx, data, usableSectors); err != nil {
 		return err
 	}
 
@@ -724,6 +737,28 @@ func (t *MIFARETag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 
 	// Verify write by reading back and comparing
 	return t.verifyWrittenNDEFData(ctx, data)
+}
+
+// validatePartialFormatCapacity returns an error if the NDEF payload will not
+// fit inside the contiguous range of sectors that formatForNDEFWithKey was
+// actually able to rekey. A zero sector count means "no cap" (tag was already
+// formatted before we started) and is always accepted here.
+func (*MIFARETag) validatePartialFormatCapacity(data []byte, usableSectors uint8) error {
+	if usableSectors == 0 {
+		return nil
+	}
+	// Sectors 1..usableSectors each expose 3 data blocks (the fourth is the
+	// sector trailer). Large MIFARE 4K sectors are not special-cased here —
+	// this is an upper-bound check and the per-block loop in writeNDEFData
+	// enforces the hard limit.
+	usableBytes := int(usableSectors) * 3 * mifareBlockSize
+	if len(data) > usableBytes {
+		return fmt.Errorf(
+			"%w: NDEF payload is %d bytes but only %d sectors (%d bytes) could be formatted",
+			ErrTagIncompatible, len(data), usableSectors, usableBytes,
+		)
+	}
+	return nil
 }
 
 type authenticationResult struct {
@@ -890,13 +925,30 @@ func (t *MIFARETag) validateNDEFSize(data []byte) error {
 	return nil
 }
 
-func (t *MIFARETag) writeNDEFData(ctx context.Context, data []byte) error {
+// writeNDEFData writes NDEF bytes sequentially to data blocks starting at
+// sector 1 block 0 (block 4). It skips sector trailers and, when usableSectors
+// is non-zero, refuses to touch any sector beyond that bound — this keeps
+// partially formatted tags from failing halfway through with an opaque auth
+// error. A usableSectors value of 0 means "no cap", matching the pre-existing
+// behaviour for tags that were already NDEF-formatted before this call.
+func (t *MIFARETag) writeNDEFData(ctx context.Context, data []byte, usableSectors uint8) error {
 	// Determine max blocks based on card type
 	var maxBlocks uint8
 	if t.IsMIFARE4K() {
 		maxBlocks = 255 // 4K card has 255 blocks (0-254)
 	} else {
 		maxBlocks = 64 // 1K card has 64 blocks (0-63)
+	}
+
+	// When we only successfully formatted a subset of sectors, cap the highest
+	// data block we are willing to touch. Sector N holds blocks N*4..N*4+3 on
+	// MIFARE 1K; we allow up to block (usableSectors+1)*4 exclusive so that
+	// sector `usableSectors` is fully usable.
+	if usableSectors > 0 {
+		capBlock := (usableSectors + 1) * 4
+		if capBlock < maxBlocks {
+			maxBlocks = capBlock
+		}
 	}
 
 	block := uint8(4)
@@ -910,7 +962,8 @@ func (t *MIFARETag) writeNDEFData(ctx context.Context, data []byte) error {
 		}
 
 		if block >= maxBlocks {
-			return errors.New("NDEF data exceeds tag capacity")
+			return fmt.Errorf("%w: insufficient formatted capacity for NDEF payload",
+				ErrTagIncompatible)
 		}
 
 		if err := t.writeDataBlock(ctx, block, data, i); err != nil {
@@ -1424,7 +1477,7 @@ func (*MIFARETag) AnalyzeLastError(err error) string {
 	return fmt.Sprintf("Generic error: %s", errStr)
 }
 
-// formatForNDEFWithKey formats a blank MIFARE Classic tag for NDEF use with a specific blank key
+// determineMaxSectors returns the number of sectors on the tag based on capacity.
 func (t *MIFARETag) determineMaxSectors() uint8 {
 	if t.IsMIFARE4K() {
 		return 40 // MIFARE Classic 4K has 40 sectors (0-39)
@@ -1470,33 +1523,96 @@ func clearKeyBytes(keyBytes []byte) {
 	}
 }
 
-func (t *MIFARETag) formatForNDEFWithKey(ctx context.Context, blankKey []byte) error {
+// classifyFormatError returns a user-friendly classification of a format failure
+// based on the underlying PN532 error code. This helps callers (and users) tell
+// apart "tag was removed" from "tag structure incompatible" from "authentication
+// failure" without having to interpret raw protocol errors.
+func classifyFormatError(err error) string {
+	var pn532Err *PN532Error
+	if errors.As(err, &pn532Err) {
+		switch pn532Err.ErrorCode {
+		case 0x01:
+			return "write timed out — tag may have been removed or is in an error state"
+		case 0x13:
+			return "tag format incompatible — non-standard MIFARE variant or clone"
+		case 0x14:
+			return "authentication failed — tag may have custom keys or be access-protected"
+		case 0x27:
+			return "tag state invalid — try repositioning the card"
+		}
+	}
+	return "unknown format error"
+}
+
+// formatForNDEFWithKey formats a blank MIFARE Classic tag for NDEF use, rewriting
+// each sector trailer's Key A and Key B to the NDEF standard key. It stops at the
+// first sector where formatting fails (rather than aborting the entire operation)
+// and returns the number of contiguous sectors successfully formatted starting
+// from sector 1. A return value of 0 means sector 1 itself could not be formatted
+// — the caller should treat this as a hard failure and surface the classified
+// error via ErrTagIncompatible.
+//
+// Sectors that already contain the NDEF key are counted as formatted. Sectors
+// whose blank-key auth succeeds but whose trailer rewrite fails halt the
+// contiguous run and cause this function to return the count so far along with
+// the underlying error wrapped by the caller.
+func (t *MIFARETag) formatForNDEFWithKey(ctx context.Context, blankKey []byte) (uint8, error) {
 	maxSectors := t.determineMaxSectors()
 	ndefKeyBytes := t.ndefKey.bytes()
+	defer clearKeyBytes(ndefKeyBytes)
+
+	var (
+		contiguous uint8
+		formatErr  error
+	)
 
 	for sector := uint8(1); sector < maxSectors; sector++ {
-		// First authenticate with the blank key
+		if err := ctx.Err(); err != nil {
+			return contiguous, err
+		}
+
+		// Authenticate with the blank key. If that fails, check whether the
+		// sector already holds the NDEF key (treated as already-formatted).
 		if err := t.AuthenticateWithRetry(ctx, sector, MIFAREKeyA, blankKey); err != nil {
-			// If we can't authenticate, assume this sector is already formatted or protected
-			continue
+			if alreadyErr := t.AuthenticateWithRetry(ctx, sector, MIFAREKeyA, ndefKeyBytes); alreadyErr == nil {
+				contiguous++
+				continue
+			}
+			// Sector has custom keys or is otherwise inaccessible. Stop the
+			// contiguous run here — we preserve whatever was formatted up to
+			// this point for callers that can use a partially formatted tag.
+			formatErr = err
+			break
 		}
 
 		if err := t.updateSectorKeys(ctx, sector, ndefKeyBytes); err != nil {
-			return err
+			formatErr = err
+			break
 		}
 
 		if err := t.reAuthenticateWithNDEFKey(ctx, sector, ndefKeyBytes); err != nil {
-			clearKeyBytes(ndefKeyBytes)
-			return err
+			formatErr = err
+			break
 		}
+
+		contiguous++
 	}
 
-	clearKeyBytes(ndefKeyBytes)
+	if contiguous == 0 {
+		// Sector 1 could not be formatted. Surface a clear, classified error so
+		// callers and support can distinguish "tag removed" from "tag format
+		// incompatible" from "authentication failure" at a glance.
+		if formatErr == nil {
+			formatErr = errors.New("no accessible sectors")
+		}
+		return 0, fmt.Errorf("%w: %s: %w",
+			ErrTagIncompatible, classifyFormatError(formatErr), formatErr)
+	}
 
-	// Add a small delay to let the tag process the key changes
+	// Add a small delay to let the tag process the key changes.
 	time.Sleep(t.config.HardwareDelay)
 
-	return nil
+	return contiguous, nil
 }
 
 // DebugInfo returns detailed debug information about the MIFARE tag

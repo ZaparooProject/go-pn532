@@ -57,6 +57,7 @@ var (
 	ErrTagEmptyData            = errors.New("tag detected but returned empty data")
 	ErrTagDataCorrupt          = errors.New("tag data appears corrupted")
 	ErrTagUnreliable           = errors.New("tag readings are inconsistent")
+	ErrTagIncompatible         = errors.New("tag is incompatible with NDEF formatting")
 	ErrWriteVerificationFailed = errors.New("write verification failed: data mismatch")
 
 	// Data errors - not retryable
