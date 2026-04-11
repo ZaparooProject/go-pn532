@@ -51,6 +51,42 @@ func TestValidateNDEFMessage(t *testing.T) {
 			data:    []byte{0x03, 0x10, 0x01, 0x02}, // Claims 16 bytes but only 2 provided
 			wantErr: true,
 		},
+		{
+			// Regression for issue #51: real-world tags have leftover bytes from
+			// prior writes past the ME record. TLV length says 7, single record
+			// consumes 5, remaining 2 bytes are zero padding.
+			name:    "trailing zero padding after ME",
+			data:    []byte{0x03, 0x07, 0xD1, 0x01, 0x01, 0x54, 0x02, 0x00, 0x00, 0xFE},
+			wantErr: false,
+		},
+		{
+			// Regression for issue #51: same shape as above but with non-zero
+			// trailing bytes (garbage from a prior tool write).
+			name:    "trailing garbage after ME",
+			data:    []byte{0x03, 0x07, 0xD1, 0x01, 0x01, 0x54, 0x02, 0xAA, 0xBB, 0xFE},
+			wantErr: false,
+		},
+		{
+			// Regression for issue #51: two consecutive records where the first
+			// already has ME set. The second is trailing data and must be ignored.
+			// First record (5 bytes): MB|ME|SR|TNF(1) type len 1 payload len 1 'T' 0x02
+			// Trailing 5 bytes interpreted as another record would fail without the fix.
+			name: "second record after ME is ignored",
+			data: []byte{
+				0x03, 0x0A,
+				0xD1, 0x01, 0x01, 0x54, 0x02,
+				0x51, 0x01, 0x01, 0x54, 0x03,
+			},
+			wantErr: false,
+		},
+		{
+			// Regression guard: a record with MB set but no ME must still error
+			// after the loop exits (validateMessageCompleteness rejects it).
+			// 0x91 = MB|SR|TNF(1), no ME.
+			name:    "record with MB but no ME is still rejected",
+			data:    []byte{0x03, 0x05, 0x91, 0x01, 0x01, 0x54, 0x02},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
