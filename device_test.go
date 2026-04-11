@@ -512,3 +512,183 @@ func TestConnectDevice_WithConnectionRetries(t *testing.T) {
 		assert.Equal(t, 1, samAttempts, "Auto-detection should only make single attempt")
 	})
 }
+
+// TestConnectDevice_AutoDetect_FallsBackOnInitFailure verifies that
+// auto-detection's candidate iteration does not bail on the first failure:
+// a wedged transport (e.g. an I2C bus without a PN532) must be skipped and
+// the next detected candidate given a chance to initialise.
+func TestConnectDevice_AutoDetect_FallsBackOnInitFailure(t *testing.T) {
+	t.Parallel()
+
+	failing := setupFailingTransport()
+
+	workingMock := NewMockTransport()
+	workingMock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
+	workingMock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
+
+	// Hand out the failing transport first, then the working one. The first
+	// candidate's SAM config fails; the second must be tried and succeed.
+	var factoryCalls int
+	deviceFactory := func(_ detection.DeviceInfo) (Transport, error) {
+		factoryCalls++
+		if factoryCalls == 1 {
+			return failing, nil
+		}
+		return workingMock, nil
+	}
+
+	mockDetector := func(_ context.Context, _ *detection.Options) ([]detection.DeviceInfo, error) {
+		return []detection.DeviceInfo{
+			{Name: "FailingCandidate", Path: "/dev/mock-bad", Transport: "mock"},
+			{Name: "WorkingCandidate", Path: "/dev/mock-good", Transport: "mock"},
+		}, nil
+	}
+
+	device, err := ConnectDevice(context.Background(), "",
+		WithAutoDetection(),
+		WithTransportFromDeviceFactory(deviceFactory),
+		WithDeviceDetector(mockDetector))
+	require.NoError(t, err, "expected fallback to the working candidate")
+	require.NotNil(t, device)
+	defer func() {
+		_ = device.Close()
+	}()
+
+	assert.Equal(t, 2, factoryCalls, "both candidates should have been tried")
+	assert.False(t, failing.IsConnected(),
+		"failed candidate's transport should have been closed on iteration skip")
+	assert.True(t, workingMock.IsConnected(),
+		"succeeding candidate's transport must still be open")
+	assert.Equal(t, 1, failing.(*MockTransport).GetCallCount(testutil.CmdSAMConfiguration),
+		"failed candidate should get exactly one SAM attempt (no retry loop on auto-detect)")
+	assert.Equal(t, 1, workingMock.GetCallCount(testutil.CmdSAMConfiguration),
+		"working candidate should get exactly one SAM attempt")
+}
+
+// TestConnectDevice_AutoDetect_AggregatesWhenAllFail verifies that when every
+// detected candidate fails to initialise, ConnectDevice returns a single
+// aggregated error naming the total candidate count instead of silently
+// hiding the first failure or returning a misleading "no devices" error.
+func TestConnectDevice_AutoDetect_AggregatesWhenAllFail(t *testing.T) {
+	t.Parallel()
+
+	first := setupFailingTransport()
+	second := setupFailingTransport()
+
+	var factoryCalls int
+	deviceFactory := func(_ detection.DeviceInfo) (Transport, error) {
+		factoryCalls++
+		if factoryCalls == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+
+	mockDetector := func(_ context.Context, _ *detection.Options) ([]detection.DeviceInfo, error) {
+		return []detection.DeviceInfo{
+			{Name: "BadA", Path: "/dev/mock-a", Transport: "mock"},
+			{Name: "BadB", Path: "/dev/mock-b", Transport: "mock"},
+		}, nil
+	}
+
+	device, err := ConnectDevice(context.Background(), "",
+		WithAutoDetection(),
+		WithTransportFromDeviceFactory(deviceFactory),
+		WithDeviceDetector(mockDetector))
+	require.Error(t, err)
+	assert.Nil(t, device)
+	assert.Contains(t, err.Error(), "all 2 auto-detected candidate(s) failed",
+		"aggregated error must surface the total candidate count")
+	assert.Equal(t, 2, factoryCalls, "both candidates should be tried before giving up")
+	assert.False(t, first.IsConnected(), "first failed transport must be closed")
+	assert.False(t, second.IsConnected(), "second failed transport must be closed")
+}
+
+// TestConnectDevice_AutoDetect_PrefersUARTOverI2C verifies that when the
+// detector returns a mix of transport types, auto-detection tries UART
+// candidates before I2C (and SPI before I2C) so a working UART PN532
+// succeeds without ever constructing an I2C transport. This matters on
+// Linux desktops where the I2C transport's host.Init() call logs a
+// gpioioctl /dev/gpiochip0 permission warning for users not in the gpio
+// group — we want that warning to stay silent whenever UART works.
+func TestConnectDevice_AutoDetect_PrefersUARTOverI2C(t *testing.T) {
+	t.Parallel()
+
+	uartMock := NewMockTransport()
+	uartMock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
+	uartMock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
+
+	// Track which transports the factory was asked to create, in order.
+	var createdTransports []string
+	deviceFactory := func(info detection.DeviceInfo) (Transport, error) {
+		createdTransports = append(createdTransports, info.Transport)
+		// Anything except UART must never actually be constructed; returning
+		// an error if we're asked for one would be fine too, but returning a
+		// bogus transport lets the test fail loudly on the assertions below
+		// if ordering breaks.
+		if info.Transport == "uart" {
+			return uartMock, nil
+		}
+		return NewMockTransport(), nil
+	}
+
+	// Return I2C first (and SPI middle) — whatever the goroutine race
+	// happens to hand back. The sort in connectAutoDetected must reorder
+	// these into uart → spi → i2c before iteration.
+	mockDetector := func(_ context.Context, _ *detection.Options) ([]detection.DeviceInfo, error) {
+		return []detection.DeviceInfo{
+			{Name: "I2CBus", Path: "/dev/i2c-1", Transport: "i2c"},
+			{Name: "SPIBus", Path: "/dev/spidev0.0", Transport: "spi"},
+			{Name: "UARTDev", Path: "/dev/ttyUSB0", Transport: "uart"},
+		}, nil
+	}
+
+	device, err := ConnectDevice(context.Background(), "",
+		WithAutoDetection(),
+		WithTransportFromDeviceFactory(deviceFactory),
+		WithDeviceDetector(mockDetector))
+	require.NoError(t, err)
+	require.NotNil(t, device)
+	defer func() {
+		_ = device.Close()
+	}()
+
+	require.NotEmpty(t, createdTransports,
+		"factory must be called at least once")
+	assert.Equal(t, "uart", createdTransports[0],
+		"UART must be tried first even though the detector returned it last; "+
+			"if an I2C transport is ever constructed, periph.io's host.Init() "+
+			"will log a gpiochip permission warning on desktop Linux")
+	assert.Len(t, createdTransports, 1,
+		"UART succeeded on first try, so neither SPI nor I2C transports "+
+			"should have been constructed at all")
+}
+
+// TestSortCandidatesByTransportPreference locks the per-transport-kind
+// ordering as a unit: UART < SPI < I2C, with unknown transports sorting
+// last and stable ordering preserved within each group.
+func TestSortCandidatesByTransportPreference(t *testing.T) {
+	t.Parallel()
+
+	devices := []detection.DeviceInfo{
+		{Name: "i2c-first", Transport: "i2c"},
+		{Name: "bogus-kind", Transport: "usb"},
+		{Name: "spi-middle", Transport: "spi"},
+		{Name: "uart-A", Transport: "uart"},
+		{Name: "i2c-second", Transport: "i2c"},
+		{Name: "uart-B", Transport: "UART"}, // case-insensitive match
+	}
+
+	sortCandidatesByTransportPreference(devices)
+
+	names := make([]string, len(devices))
+	for i, d := range devices {
+		names[i] = d.Name
+	}
+
+	// UART group first (stable: A then B), then SPI, then I2C (stable:
+	// first then second), then any unknown kind.
+	assert.Equal(t,
+		[]string{"uart-A", "uart-B", "spi-middle", "i2c-first", "i2c-second", "bogus-kind"},
+		names)
+}

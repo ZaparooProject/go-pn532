@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/ZaparooProject/go-pn532/detection"
@@ -175,18 +177,6 @@ func WithDeviceDetector(
 	}
 }
 
-// ConnectDevice creates and initializes a PN532 device from a path or auto-detection.
-// This is a high-level convenience function that handles transport creation, device
-// initialization, and optional validation setup.
-//
-// Example usage:
-//
-//	// Connect to specific device
-//	device, err := pn532.ConnectDevice("/dev/ttyUSB0")
-//
-//
-//	// Auto-detect device
-//	device, err := pn532.ConnectDevice("", pn532.WithAutoDetection())
 func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 	config := &connectConfig{
 		autoDetect:             false,
@@ -204,13 +194,6 @@ func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 	}
 
 	return config, nil
-}
-
-func createTransport(ctx context.Context, path string, config *connectConfig) (Transport, error) {
-	if config.autoDetect || path == "" {
-		return createAutoDetectedTransport(ctx, config.transportDeviceFactory, config.deviceDetector)
-	}
-	return createManualTransport(path, config.transportFactory)
 }
 
 func setupDevice(ctx context.Context, transport Transport, config *connectConfig) (*Device, error) {
@@ -232,14 +215,11 @@ func setupDevice(ctx context.Context, transport Transport, config *connectConfig
 	return device, nil
 }
 
-// setupDeviceWithRetry wraps setupDevice with retry logic for connection attempts
+// setupDeviceWithRetry wraps setupDevice with retry logic for manual
+// connections. Auto-detection does not use this path — it tries each detected
+// candidate exactly once inside connectAutoDetected so a wedged transport
+// can't burn a retry budget on top of iteration.
 func setupDeviceWithRetry(ctx context.Context, transport Transport, config *connectConfig) (*Device, error) {
-	// Auto-detection should bypass retry logic (single attempt only)
-	if config.autoDetect {
-		return setupDevice(ctx, transport, config)
-	}
-
-	// Manual connections use retry logic
 	retryConfig := &RetryConfig{
 		MaxAttempts:       config.connectionRetries,
 		InitialBackoff:    ConnectionInitialBackoff,
@@ -265,15 +245,70 @@ func setupDeviceWithRetry(ctx context.Context, transport Transport, config *conn
 	return device, nil
 }
 
+// ConnectDevice creates and initializes a PN532 device from a path or via
+// auto-detection. It handles transport creation, device initialization, and
+// optional validation setup.
+//
+// The pn532 package does not bundle a default transport — callers must wire up
+// whichever transports they want to link (uart, i2c, spi, or a custom one) and
+// pass the corresponding factory option. This keeps consumers that only need
+// one transport from pulling in the others (and their dependencies).
+//
+// For an explicit device path, pass [WithTransportFactory] with a function that
+// returns the right [Transport] for the given path string:
+//
+//	import (
+//	    pn532 "github.com/ZaparooProject/go-pn532"
+//	    "github.com/ZaparooProject/go-pn532/transport/uart"
+//	)
+//
+//	newTransport := func(path string) (pn532.Transport, error) {
+//	    return uart.New(path)
+//	}
+//	device, err := pn532.ConnectDevice(ctx, "/dev/ttyUSB0",
+//	    pn532.WithTransportFactory(newTransport))
+//
+// For auto-detection, register the detectors you care about via blank import
+// and pass [WithAutoDetection] together with [WithTransportFromDeviceFactory]:
+//
+//	import (
+//	    pn532 "github.com/ZaparooProject/go-pn532"
+//	    "github.com/ZaparooProject/go-pn532/detection"
+//	    _ "github.com/ZaparooProject/go-pn532/detection/uart"
+//	    "github.com/ZaparooProject/go-pn532/transport/uart"
+//	)
+//
+//	newFromDevice := func(info detection.DeviceInfo) (pn532.Transport, error) {
+//	    return uart.New(info.Path)
+//	}
+//	device, err := pn532.ConnectDevice(ctx, "",
+//	    pn532.WithAutoDetection(),
+//	    pn532.WithTransportFromDeviceFactory(newFromDevice))
+//
+// See cmd/reader/main.go for a complete example that supports all three
+// transports.
 func ConnectDevice(ctx context.Context, path string, opts ...ConnectOption) (*Device, error) {
 	config, err := applyConnectOptions(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply connect options: %w", err)
 	}
 
-	transport, err := createTransport(ctx, path, config)
+	if config.autoDetect || path == "" {
+		return connectAutoDetected(ctx, config)
+	}
+	return connectManual(ctx, path, config)
+}
+
+// connectManual builds a transport for an explicit path and runs the retry
+// loop against it. Used when the caller knows exactly which device to open.
+func connectManual(ctx context.Context, path string, config *connectConfig) (*Device, error) {
+	if config.transportFactory == nil {
+		return nil, errors.New("transport factory not provided")
+	}
+
+	transport, err := config.transportFactory(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create transport: %w", err)
+		return nil, fmt.Errorf("failed to create transport for path %s: %w", path, err)
 	}
 
 	device, err := setupDeviceWithRetry(ctx, transport, config)
@@ -281,56 +316,137 @@ func ConnectDevice(ctx context.Context, path string, opts ...ConnectOption) (*De
 		_ = transport.Close()
 		return nil, err
 	}
-
 	return device, nil
 }
 
-// createManualTransport handles creation of transport for a specific path
-func createManualTransport(path string, factory TransportFactory) (Transport, error) {
-	if factory == nil {
-		return nil, errors.New("transport factory not provided")
+// connectAutoDetected runs auto-detection and tries each returned candidate
+// in turn, returning the first one that initialises successfully. Detection
+// handing back a Low-confidence candidate (e.g. an I2C bus on a host where
+// no PN532 is actually wired up) must not kill the whole connection attempt
+// — the next candidate gets a chance, and only if every candidate fails do
+// we return a single aggregated error explaining which transports were
+// tried and why each failed.
+//
+// Per-candidate failures are written to the session log via Debugf so they
+// show up when something unexpected happens, but they do not propagate to
+// the caller as long as another candidate succeeds.
+func connectAutoDetected(ctx context.Context, config *connectConfig) (*Device, error) {
+	if config.transportDeviceFactory == nil {
+		return nil, errors.New("transport device factory not provided")
 	}
 
-	transport, err := factory(path)
+	devices, err := runAutoDetection(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create transport for path %s: %w", path, err)
+		return nil, err
 	}
 
-	return transport, nil
+	// Prefer quiet transports first. UART and SPI open cleanly on desktop
+	// Linux; periph.io's host.Init() (called on first I2C/SPI transport
+	// construction) loudly logs a /dev/gpiochip0 permission warning via
+	// gpioioctl whenever the user isn't in the gpio group. If UART is
+	// present we never want to touch that code path, so we try UART
+	// candidates before I2C/SPI. This is a transport-kind preference, not
+	// a confidence sort: any working candidate will still win.
+	sortCandidatesByTransportPreference(devices)
+
+	var candidateErrs []error
+	for i := range devices {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		candidate := devices[i]
+		device, tryErr := tryAutoDetectedCandidate(ctx, candidate, config)
+		if tryErr == nil {
+			return device, nil
+		}
+
+		Debugf("auto-detect: skipping %s: %v", candidate.String(), tryErr)
+		candidateErrs = append(candidateErrs, fmt.Errorf("%s: %w", candidate.String(), tryErr))
+	}
+
+	return nil, fmt.Errorf("all %d auto-detected candidate(s) failed to initialise: %w",
+		len(devices), errors.Join(candidateErrs...))
 }
 
-// createAutoDetectedTransport handles auto-detection of devices
-func createAutoDetectedTransport(
-	ctx context.Context,
-	factory TransportFromDeviceFactory,
-	detector func(context.Context, *detection.Options) ([]detection.DeviceInfo, error),
-) (Transport, error) {
+// transportPreferenceRank returns the preference rank of a detection
+// Transport string, used to order auto-detect candidates. Lower is tried
+// first. UART comes before SPI comes before I2C so that, when a UART PN532
+// is present, we never construct an I2C/SPI transport and therefore never
+// trigger periph.io's host.Init() (which loudly logs a gpiochip
+// permission-denied warning on hosts where the user isn't in the gpio
+// group). Unknown transports sort last.
+//
+// Matching is case-insensitive to tolerate detector implementations that
+// use different casing conventions for their Transport field.
+func transportPreferenceRank(transport string) int {
+	switch strings.ToLower(transport) {
+	case "uart":
+		return 0
+	case "spi":
+		return 1
+	case "i2c":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// sortCandidatesByTransportPreference reorders the detected devices in
+// place so UART candidates are tried before SPI, and SPI before I2C. This
+// is a transport-kind preference only — it does not re-rank devices of the
+// same transport among themselves (a stable sort preserves the order the
+// detectors returned them in).
+func sortCandidatesByTransportPreference(devices []detection.DeviceInfo) {
+	sort.SliceStable(devices, func(i, j int) bool {
+		return transportPreferenceRank(devices[i].Transport) < transportPreferenceRank(devices[j].Transport)
+	})
+}
+
+// runAutoDetection invokes whichever detector the caller configured (custom
+// or the default registry-based DetectAll) and normalises the "no devices"
+// outcome so connectAutoDetected's caller always sees a clear error rather
+// than an empty slice.
+func runAutoDetection(ctx context.Context, config *connectConfig) ([]detection.DeviceInfo, error) {
 	opts := detection.DefaultOptions()
 	opts.Mode = detection.Safe
 
-	var devices []detection.DeviceInfo
-	var err error
-
-	if detector != nil {
-		devices, err = detector(ctx, &opts)
+	var (
+		devices []detection.DeviceInfo
+		err     error
+	)
+	if config.deviceDetector != nil {
+		devices, err = config.deviceDetector(ctx, &opts)
 	} else {
 		devices, err = detection.DetectAll(ctx, &opts)
 	}
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %w", err)
 	}
-
 	if len(devices) == 0 {
 		return nil, errors.New("no PN532 devices found")
 	}
+	return devices, nil
+}
 
-	// Use the first detected device
-	device := devices[0]
-	if factory == nil {
-		return nil, errors.New("transport device factory not provided")
+// tryAutoDetectedCandidate builds a transport for a single detected device
+// and initialises a Device on it. On any failure the transport is closed
+// before returning so failed candidates leak neither file descriptors nor
+// bus locks.
+func tryAutoDetectedCandidate(
+	ctx context.Context, candidate detection.DeviceInfo, config *connectConfig,
+) (*Device, error) {
+	transport, err := config.transportDeviceFactory(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("transport creation: %w", err)
 	}
-	return factory(device)
+
+	device, err := setupDevice(ctx, transport, config)
+	if err != nil {
+		_ = transport.Close()
+		return nil, fmt.Errorf("device init: %w", err)
+	}
+	return device, nil
 }
 
 // Transport returns the underlying transport
