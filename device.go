@@ -177,18 +177,6 @@ func WithDeviceDetector(
 	}
 }
 
-// ConnectDevice creates and initializes a PN532 device from a path or auto-detection.
-// This is a high-level convenience function that handles transport creation, device
-// initialization, and optional validation setup.
-//
-// Example usage:
-//
-//	// Connect to specific device
-//	device, err := pn532.ConnectDevice("/dev/ttyUSB0")
-//
-//
-//	// Auto-detect device
-//	device, err := pn532.ConnectDevice("", pn532.WithAutoDetection())
 func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 	config := &connectConfig{
 		autoDetect:             false,
@@ -257,6 +245,48 @@ func setupDeviceWithRetry(ctx context.Context, transport Transport, config *conn
 	return device, nil
 }
 
+// ConnectDevice creates and initializes a PN532 device from a path or via
+// auto-detection. It handles transport creation, device initialization, and
+// optional validation setup.
+//
+// The pn532 package does not bundle a default transport — callers must wire up
+// whichever transports they want to link (uart, i2c, spi, or a custom one) and
+// pass the corresponding factory option. This keeps consumers that only need
+// one transport from pulling in the others (and their dependencies).
+//
+// For an explicit device path, pass [WithTransportFactory] with a function that
+// returns the right [Transport] for the given path string:
+//
+//	import (
+//	    pn532 "github.com/ZaparooProject/go-pn532"
+//	    "github.com/ZaparooProject/go-pn532/transport/uart"
+//	)
+//
+//	newTransport := func(path string) (pn532.Transport, error) {
+//	    return uart.New(path)
+//	}
+//	device, err := pn532.ConnectDevice(ctx, "/dev/ttyUSB0",
+//	    pn532.WithTransportFactory(newTransport))
+//
+// For auto-detection, register the detectors you care about via blank import
+// and pass [WithAutoDetection] together with [WithTransportFromDeviceFactory]:
+//
+//	import (
+//	    pn532 "github.com/ZaparooProject/go-pn532"
+//	    "github.com/ZaparooProject/go-pn532/detection"
+//	    _ "github.com/ZaparooProject/go-pn532/detection/uart"
+//	    "github.com/ZaparooProject/go-pn532/transport/uart"
+//	)
+//
+//	newFromDevice := func(info detection.DeviceInfo) (pn532.Transport, error) {
+//	    return uart.New(info.Path)
+//	}
+//	device, err := pn532.ConnectDevice(ctx, "",
+//	    pn532.WithAutoDetection(),
+//	    pn532.WithTransportFromDeviceFactory(newFromDevice))
+//
+// See cmd/reader/main.go for a complete example that supports all three
+// transports.
 func ConnectDevice(ctx context.Context, path string, opts ...ConnectOption) (*Device, error) {
 	config, err := applyConnectOptions(opts)
 	if err != nil {
