@@ -1135,60 +1135,60 @@ func TestMIFARETag_FormatForNDEF(t *testing.T) {
 	}
 }
 
-// --- Issue #49 regression tests: Mifare Classic partial-format + classification ---
+// --- Issue #49 regression tests: Mifare Classic partial-format ---
 
-func TestClassifyFormatError(t *testing.T) {
+func TestClassifyPN532Error(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		err      error
-		name     string
-		contains string
+		err  error
+		want error
+		name string
 	}{
 		{
-			name:     "timeout_0x01",
-			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x01},
-			contains: "write timed out",
+			name: "timeout_0x01",
+			err:  &PN532Error{Command: "InDataExchange", ErrorCode: 0x01},
+			want: ErrTagTimeout,
 		},
 		{
-			name:     "dataformat_mismatch_0x13",
-			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x13},
-			contains: "non-standard MIFARE variant or clone",
+			name: "dataformat_mismatch_0x13",
+			err:  &PN532Error{Command: "InDataExchange", ErrorCode: 0x13},
+			want: ErrTagDataMismatch,
 		},
 		{
-			name:     "auth_failed_0x14",
-			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x14},
-			contains: "authentication failed",
+			name: "auth_failed_0x14",
+			err:  &PN532Error{Command: "InDataExchange", ErrorCode: 0x14},
+			want: ErrTagAuthFailed,
 		},
 		{
-			name:     "wrong_context_0x27",
-			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x27},
-			contains: "tag state invalid",
+			name: "wrong_context_0x27",
+			err:  &PN532Error{Command: "InDataExchange", ErrorCode: 0x27},
+			want: ErrTagInvalidState,
 		},
 		{
-			name:     "unknown_pn532_code",
-			err:      &PN532Error{Command: "InDataExchange", ErrorCode: 0x99},
-			contains: "unknown format error",
+			name: "unclassified_pn532_code",
+			err:  &PN532Error{Command: "InDataExchange", ErrorCode: 0x99},
+			want: nil,
 		},
 		{
-			name: "wrapped_pn532_error",
-			err: fmt.Errorf("tag write failed (block 7): %w",
+			name: "wrapped_pn532_error_still_classifies",
+			err: fmt.Errorf("block 7 write failed: %w",
 				&PN532Error{Command: "InDataExchange", ErrorCode: 0x13}),
-			contains: "non-standard MIFARE variant or clone",
+			want: ErrTagDataMismatch,
 		},
 		{
-			name:     "non_pn532_error",
-			err:      errors.New("some other error"),
-			contains: "unknown format error",
+			name: "non_pn532_error",
+			err:  errors.New("something else"),
+			want: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := classifyFormatError(tt.err)
-			assert.Contains(t, got, tt.contains,
-				"classifyFormatError should classify error into user-friendly text")
+			got := classifyPN532Error(tt.err)
+			assert.Equal(t, tt.want, got,
+				"classifyPN532Error should return the matching sentinel")
 		})
 	}
 }
@@ -1283,11 +1283,13 @@ func TestMIFARETag_FormatForNDEFWithKey_NoAccessibleSector1(t *testing.T) {
 		"sector 1 failure must surface as ErrTagIncompatible")
 }
 
-// TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorSurfacesClassification asserts
-// that when sector 1 fails with a *PN532Error carrying a known code (0x13
-// dataformat mismatch, the failure mode reported in issue #49), the wrapped
-// error contains the user-facing classification string.
-func TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorSurfacesClassification(t *testing.T) {
+// TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorChainsSentinel asserts that
+// when sector 1 fails with a *PN532Error (0x13 dataformat mismatch, the
+// failure mode reported in issue #49), the returned error chain contains
+// both ErrTagIncompatible (the operation-level sentinel) and ErrTagDataMismatch
+// (the classification sentinel) so callers can branch on cause with
+// errors.Is, and the raw *PN532Error is still reachable via errors.As.
+func TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorChainsSentinel(t *testing.T) {
 	t.Parallel()
 
 	tag, mt := setupMIFARETagTest(t, func(_ *MockTransport) {})
@@ -1298,9 +1300,15 @@ func TestMIFARETag_FormatForNDEFWithKey_Pn532ErrorSurfacesClassification(t *test
 	_, err := tag.formatForNDEFWithKey(context.Background(), blankKey)
 
 	require.Error(t, err)
-	require.ErrorIs(t, err, ErrTagIncompatible)
-	assert.Contains(t, err.Error(), "non-standard MIFARE variant or clone",
-		"classified error message should be surfaced through the error chain")
+	require.ErrorIs(t, err, ErrTagIncompatible,
+		"error chain must include the operation-level sentinel")
+	require.ErrorIs(t, err, ErrTagDataMismatch,
+		"error chain must include the classification sentinel")
+
+	var pn532Err *PN532Error
+	require.ErrorAs(t, err, &pn532Err,
+		"underlying *PN532Error must remain unwrappable through the error chain")
+	assert.Equal(t, uint8(0x13), pn532Err.ErrorCode)
 }
 
 func TestMIFARETag_WriteNDEFAlternative(t *testing.T) {

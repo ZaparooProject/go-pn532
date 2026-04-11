@@ -1523,25 +1523,41 @@ func clearKeyBytes(keyBytes []byte) {
 	}
 }
 
-// classifyFormatError returns a user-friendly classification of a format failure
-// based on the underlying PN532 error code. This helps callers (and users) tell
-// apart "tag was removed" from "tag structure incompatible" from "authentication
-// failure" without having to interpret raw protocol errors.
-func classifyFormatError(err error) string {
-	var pn532Err *PN532Error
-	if errors.As(err, &pn532Err) {
-		switch pn532Err.ErrorCode {
-		case 0x01:
-			return "write timed out — tag may have been removed or is in an error state"
-		case 0x13:
-			return "tag format incompatible — non-standard MIFARE variant or clone"
-		case 0x14:
-			return "authentication failed — tag may have custom keys or be access-protected"
-		case 0x27:
-			return "tag state invalid — try repositioning the card"
-		}
+// wrapSector1FormatFailure wraps a sector-1 format failure with the
+// operation-level sentinel ErrTagIncompatible and, when the underlying cause
+// is a classified PN532 error, chains the matching classification sentinel
+// (e.g. ErrTagAuthFailed, ErrTagDataMismatch) so callers can distinguish
+// causes via errors.Is without inspecting raw error codes.
+func wrapSector1FormatFailure(cause error) error {
+	if cause == nil {
+		cause = errors.New("no accessible sectors")
 	}
-	return "unknown format error"
+	if sentinel := classifyPN532Error(cause); sentinel != nil {
+		return fmt.Errorf("%w: %w: %w", ErrTagIncompatible, sentinel, cause)
+	}
+	return fmt.Errorf("%w: %w", ErrTagIncompatible, cause)
+}
+
+// classifyPN532Error maps a PN532 protocol error code onto one of the tag
+// classification sentinels (ErrTagTimeout, ErrTagDataMismatch, ErrTagAuthFailed,
+// ErrTagInvalidState) so callers can branch on the cause via errors.Is. Returns
+// nil if err does not contain a *PN532Error or the code is not classified.
+func classifyPN532Error(err error) error {
+	var pn532Err *PN532Error
+	if !errors.As(err, &pn532Err) {
+		return nil
+	}
+	switch pn532Err.ErrorCode {
+	case 0x01:
+		return ErrTagTimeout
+	case 0x13:
+		return ErrTagDataMismatch
+	case 0x14:
+		return ErrTagAuthFailed
+	case 0x27:
+		return ErrTagInvalidState
+	}
+	return nil
 }
 
 // formatForNDEFWithKey formats a blank MIFARE Classic tag for NDEF use, rewriting
@@ -1549,8 +1565,8 @@ func classifyFormatError(err error) string {
 // first sector where formatting fails (rather than aborting the entire operation)
 // and returns the number of contiguous sectors successfully formatted starting
 // from sector 1. A return value of 0 means sector 1 itself could not be formatted
-// — the caller should treat this as a hard failure and surface the classified
-// error via ErrTagIncompatible.
+// and the returned error wraps ErrTagIncompatible + a classification sentinel
+// (when applicable) around the underlying failure.
 //
 // Sectors that already contain the NDEF key are counted as formatted. Sectors
 // whose blank-key auth succeeds but whose trailer rewrite fails halt the
@@ -1599,14 +1615,7 @@ func (t *MIFARETag) formatForNDEFWithKey(ctx context.Context, blankKey []byte) (
 	}
 
 	if contiguous == 0 {
-		// Sector 1 could not be formatted. Surface a clear, classified error so
-		// callers and support can distinguish "tag removed" from "tag format
-		// incompatible" from "authentication failure" at a glance.
-		if formatErr == nil {
-			formatErr = errors.New("no accessible sectors")
-		}
-		return 0, fmt.Errorf("%w: %s: %w",
-			ErrTagIncompatible, classifyFormatError(formatErr), formatErr)
+		return 0, wrapSector1FormatFailure(formatErr)
 	}
 
 	// Add a small delay to let the tag process the key changes.
