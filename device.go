@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/ZaparooProject/go-pn532/detection"
@@ -308,6 +310,15 @@ func connectAutoDetected(ctx context.Context, config *connectConfig) (*Device, e
 		return nil, err
 	}
 
+	// Prefer quiet transports first. UART and SPI open cleanly on desktop
+	// Linux; periph.io's host.Init() (called on first I2C/SPI transport
+	// construction) loudly logs a /dev/gpiochip0 permission warning via
+	// gpioioctl whenever the user isn't in the gpio group. If UART is
+	// present we never want to touch that code path, so we try UART
+	// candidates before I2C/SPI. This is a transport-kind preference, not
+	// a confidence sort: any working candidate will still win.
+	sortCandidatesByTransportPreference(devices)
+
 	var candidateErrs []error
 	for i := range devices {
 		if err := ctx.Err(); err != nil {
@@ -326,6 +337,40 @@ func connectAutoDetected(ctx context.Context, config *connectConfig) (*Device, e
 
 	return nil, fmt.Errorf("all %d auto-detected candidate(s) failed to initialise: %w",
 		len(devices), errors.Join(candidateErrs...))
+}
+
+// transportPreferenceRank returns the preference rank of a detection
+// Transport string, used to order auto-detect candidates. Lower is tried
+// first. UART comes before SPI comes before I2C so that, when a UART PN532
+// is present, we never construct an I2C/SPI transport and therefore never
+// trigger periph.io's host.Init() (which loudly logs a gpiochip
+// permission-denied warning on hosts where the user isn't in the gpio
+// group). Unknown transports sort last.
+//
+// Matching is case-insensitive to tolerate detector implementations that
+// use different casing conventions for their Transport field.
+func transportPreferenceRank(transport string) int {
+	switch strings.ToLower(transport) {
+	case "uart":
+		return 0
+	case "spi":
+		return 1
+	case "i2c":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// sortCandidatesByTransportPreference reorders the detected devices in
+// place so UART candidates are tried before SPI, and SPI before I2C. This
+// is a transport-kind preference only — it does not re-rank devices of the
+// same transport among themselves (a stable sort preserves the order the
+// detectors returned them in).
+func sortCandidatesByTransportPreference(devices []detection.DeviceInfo) {
+	sort.SliceStable(devices, func(i, j int) bool {
+		return transportPreferenceRank(devices[i].Transport) < transportPreferenceRank(devices[j].Transport)
+	})
 }
 
 // runAutoDetection invokes whichever detector the caller configured (custom
