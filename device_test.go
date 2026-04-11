@@ -512,3 +512,94 @@ func TestConnectDevice_WithConnectionRetries(t *testing.T) {
 		assert.Equal(t, 1, samAttempts, "Auto-detection should only make single attempt")
 	})
 }
+
+// TestConnectDevice_AutoDetect_FallsBackOnInitFailure verifies that
+// auto-detection's candidate iteration does not bail on the first failure:
+// a wedged transport (e.g. an I2C bus without a PN532) must be skipped and
+// the next detected candidate given a chance to initialise.
+func TestConnectDevice_AutoDetect_FallsBackOnInitFailure(t *testing.T) {
+	t.Parallel()
+
+	failing := setupFailingTransport()
+
+	workingMock := NewMockTransport()
+	workingMock.SetResponse(testutil.CmdGetFirmwareVersion, testutil.BuildFirmwareVersionResponse())
+	workingMock.SetResponse(testutil.CmdSAMConfiguration, testutil.BuildSAMConfigurationResponse())
+
+	// Hand out the failing transport first, then the working one. The first
+	// candidate's SAM config fails; the second must be tried and succeed.
+	var factoryCalls int
+	deviceFactory := func(_ detection.DeviceInfo) (Transport, error) {
+		factoryCalls++
+		if factoryCalls == 1 {
+			return failing, nil
+		}
+		return workingMock, nil
+	}
+
+	mockDetector := func(_ context.Context, _ *detection.Options) ([]detection.DeviceInfo, error) {
+		return []detection.DeviceInfo{
+			{Name: "FailingCandidate", Path: "/dev/mock-bad", Transport: "mock"},
+			{Name: "WorkingCandidate", Path: "/dev/mock-good", Transport: "mock"},
+		}, nil
+	}
+
+	device, err := ConnectDevice(context.Background(), "",
+		WithAutoDetection(),
+		WithTransportFromDeviceFactory(deviceFactory),
+		WithDeviceDetector(mockDetector))
+	require.NoError(t, err, "expected fallback to the working candidate")
+	require.NotNil(t, device)
+	defer func() {
+		_ = device.Close()
+	}()
+
+	assert.Equal(t, 2, factoryCalls, "both candidates should have been tried")
+	assert.False(t, failing.IsConnected(),
+		"failed candidate's transport should have been closed on iteration skip")
+	assert.True(t, workingMock.IsConnected(),
+		"succeeding candidate's transport must still be open")
+	assert.Equal(t, 1, failing.(*MockTransport).GetCallCount(testutil.CmdSAMConfiguration),
+		"failed candidate should get exactly one SAM attempt (no retry loop on auto-detect)")
+	assert.Equal(t, 1, workingMock.GetCallCount(testutil.CmdSAMConfiguration),
+		"working candidate should get exactly one SAM attempt")
+}
+
+// TestConnectDevice_AutoDetect_AggregatesWhenAllFail verifies that when every
+// detected candidate fails to initialise, ConnectDevice returns a single
+// aggregated error naming the total candidate count instead of silently
+// hiding the first failure or returning a misleading "no devices" error.
+func TestConnectDevice_AutoDetect_AggregatesWhenAllFail(t *testing.T) {
+	t.Parallel()
+
+	first := setupFailingTransport()
+	second := setupFailingTransport()
+
+	var factoryCalls int
+	deviceFactory := func(_ detection.DeviceInfo) (Transport, error) {
+		factoryCalls++
+		if factoryCalls == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+
+	mockDetector := func(_ context.Context, _ *detection.Options) ([]detection.DeviceInfo, error) {
+		return []detection.DeviceInfo{
+			{Name: "BadA", Path: "/dev/mock-a", Transport: "mock"},
+			{Name: "BadB", Path: "/dev/mock-b", Transport: "mock"},
+		}, nil
+	}
+
+	device, err := ConnectDevice(context.Background(), "",
+		WithAutoDetection(),
+		WithTransportFromDeviceFactory(deviceFactory),
+		WithDeviceDetector(mockDetector))
+	require.Error(t, err)
+	assert.Nil(t, device)
+	assert.Contains(t, err.Error(), "all 2 auto-detected candidate(s) failed",
+		"aggregated error must surface the total candidate count")
+	assert.Equal(t, 2, factoryCalls, "both candidates should be tried before giving up")
+	assert.False(t, first.IsConnected(), "first failed transport must be closed")
+	assert.False(t, second.IsConnected(), "second failed transport must be closed")
+}

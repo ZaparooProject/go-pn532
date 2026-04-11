@@ -206,13 +206,6 @@ func applyConnectOptions(opts []ConnectOption) (*connectConfig, error) {
 	return config, nil
 }
 
-func createTransport(ctx context.Context, path string, config *connectConfig) (Transport, error) {
-	if config.autoDetect || path == "" {
-		return createAutoDetectedTransport(ctx, config.transportDeviceFactory, config.deviceDetector)
-	}
-	return createManualTransport(path, config.transportFactory)
-}
-
 func setupDevice(ctx context.Context, transport Transport, config *connectConfig) (*Device, error) {
 	device, err := New(transport, config.deviceOptions...)
 	if err != nil {
@@ -232,14 +225,11 @@ func setupDevice(ctx context.Context, transport Transport, config *connectConfig
 	return device, nil
 }
 
-// setupDeviceWithRetry wraps setupDevice with retry logic for connection attempts
+// setupDeviceWithRetry wraps setupDevice with retry logic for manual
+// connections. Auto-detection does not use this path — it tries each detected
+// candidate exactly once inside connectAutoDetected so a wedged transport
+// can't burn a retry budget on top of iteration.
 func setupDeviceWithRetry(ctx context.Context, transport Transport, config *connectConfig) (*Device, error) {
-	// Auto-detection should bypass retry logic (single attempt only)
-	if config.autoDetect {
-		return setupDevice(ctx, transport, config)
-	}
-
-	// Manual connections use retry logic
 	retryConfig := &RetryConfig{
 		MaxAttempts:       config.connectionRetries,
 		InitialBackoff:    ConnectionInitialBackoff,
@@ -271,9 +261,22 @@ func ConnectDevice(ctx context.Context, path string, opts ...ConnectOption) (*De
 		return nil, fmt.Errorf("failed to apply connect options: %w", err)
 	}
 
-	transport, err := createTransport(ctx, path, config)
+	if config.autoDetect || path == "" {
+		return connectAutoDetected(ctx, config)
+	}
+	return connectManual(ctx, path, config)
+}
+
+// connectManual builds a transport for an explicit path and runs the retry
+// loop against it. Used when the caller knows exactly which device to open.
+func connectManual(ctx context.Context, path string, config *connectConfig) (*Device, error) {
+	if config.transportFactory == nil {
+		return nil, errors.New("transport factory not provided")
+	}
+
+	transport, err := config.transportFactory(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create transport: %w", err)
+		return nil, fmt.Errorf("failed to create transport for path %s: %w", path, err)
 	}
 
 	device, err := setupDeviceWithRetry(ctx, transport, config)
@@ -281,56 +284,94 @@ func ConnectDevice(ctx context.Context, path string, opts ...ConnectOption) (*De
 		_ = transport.Close()
 		return nil, err
 	}
-
 	return device, nil
 }
 
-// createManualTransport handles creation of transport for a specific path
-func createManualTransport(path string, factory TransportFactory) (Transport, error) {
-	if factory == nil {
-		return nil, errors.New("transport factory not provided")
+// connectAutoDetected runs auto-detection and tries each returned candidate
+// in turn, returning the first one that initialises successfully. Detection
+// handing back a Low-confidence candidate (e.g. an I2C bus on a host where
+// no PN532 is actually wired up) must not kill the whole connection attempt
+// — the next candidate gets a chance, and only if every candidate fails do
+// we return a single aggregated error explaining which transports were
+// tried and why each failed.
+//
+// Per-candidate failures are written to the session log via Debugf so they
+// show up when something unexpected happens, but they do not propagate to
+// the caller as long as another candidate succeeds.
+func connectAutoDetected(ctx context.Context, config *connectConfig) (*Device, error) {
+	if config.transportDeviceFactory == nil {
+		return nil, errors.New("transport device factory not provided")
 	}
 
-	transport, err := factory(path)
+	devices, err := runAutoDetection(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create transport for path %s: %w", path, err)
+		return nil, err
 	}
 
-	return transport, nil
+	var candidateErrs []error
+	for i := range devices {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		candidate := devices[i]
+		device, tryErr := tryAutoDetectedCandidate(ctx, candidate, config)
+		if tryErr == nil {
+			return device, nil
+		}
+
+		Debugf("auto-detect: skipping %s: %v", candidate.String(), tryErr)
+		candidateErrs = append(candidateErrs, fmt.Errorf("%s: %w", candidate.String(), tryErr))
+	}
+
+	return nil, fmt.Errorf("all %d auto-detected candidate(s) failed to initialise: %w",
+		len(devices), errors.Join(candidateErrs...))
 }
 
-// createAutoDetectedTransport handles auto-detection of devices
-func createAutoDetectedTransport(
-	ctx context.Context,
-	factory TransportFromDeviceFactory,
-	detector func(context.Context, *detection.Options) ([]detection.DeviceInfo, error),
-) (Transport, error) {
+// runAutoDetection invokes whichever detector the caller configured (custom
+// or the default registry-based DetectAll) and normalises the "no devices"
+// outcome so connectAutoDetected's caller always sees a clear error rather
+// than an empty slice.
+func runAutoDetection(ctx context.Context, config *connectConfig) ([]detection.DeviceInfo, error) {
 	opts := detection.DefaultOptions()
 	opts.Mode = detection.Safe
 
-	var devices []detection.DeviceInfo
-	var err error
-
-	if detector != nil {
-		devices, err = detector(ctx, &opts)
+	var (
+		devices []detection.DeviceInfo
+		err     error
+	)
+	if config.deviceDetector != nil {
+		devices, err = config.deviceDetector(ctx, &opts)
 	} else {
 		devices, err = detection.DetectAll(ctx, &opts)
 	}
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect devices: %w", err)
 	}
-
 	if len(devices) == 0 {
 		return nil, errors.New("no PN532 devices found")
 	}
+	return devices, nil
+}
 
-	// Use the first detected device
-	device := devices[0]
-	if factory == nil {
-		return nil, errors.New("transport device factory not provided")
+// tryAutoDetectedCandidate builds a transport for a single detected device
+// and initialises a Device on it. On any failure the transport is closed
+// before returning so failed candidates leak neither file descriptors nor
+// bus locks.
+func tryAutoDetectedCandidate(
+	ctx context.Context, candidate detection.DeviceInfo, config *connectConfig,
+) (*Device, error) {
+	transport, err := config.transportDeviceFactory(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("transport creation: %w", err)
 	}
-	return factory(device)
+
+	device, err := setupDevice(ctx, transport, config)
+	if err != nil {
+		_ = transport.Close()
+		return nil, fmt.Errorf("device init: %w", err)
+	}
+	return device, nil
 }
 
 // Transport returns the underlying transport
