@@ -18,6 +18,7 @@ package polling
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2131,3 +2132,104 @@ func (m *minimalMockTransport) IsConnected() bool {
 }
 
 func (*minimalMockTransport) Type() pn532.TransportType { return pn532.TransportMock }
+
+// --- Issue #50 regression tests: Start-path cancellation and goroutine leaks ---
+
+// TestSession_Start_NoLeakOnFailedInit runs many Start/Close cycles against a
+// mock transport that fails RFConfiguration (the first command Start issues via
+// SetPollingRetries). Each Start must return promptly, and the total goroutine
+// count must not grow unbounded across cycles.
+//
+// This guards against the regression reported in issue #50 where repeated
+// reconnects after SAM configuration failures accumulated thousands of
+// goroutines on MiSTer devices.
+//
+// The test deliberately does not use t.Parallel() because parallel test
+// goroutines would pollute the NumGoroutine counts.
+//
+//nolint:paralleltest // intentional: measures goroutine count, must run serially
+func TestSession_Start_NoLeakOnFailedInit(t *testing.T) {
+	// Allow the runtime to settle any background goroutines before snapshotting.
+	runtime.GC() //nolint:revive // explicit GC stabilises NumGoroutine baseline
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	const cycles = 50
+	for i := range cycles {
+		device, mockTransport := createMockDeviceWithTransport(t)
+		// Fail the very first command Start issues via SetPollingRetries.
+		mockTransport.SetError(0x32, errors.New("simulated RFConfiguration failure"))
+
+		session := NewSession(device, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- session.Start(ctx)
+		}()
+
+		select {
+		case err := <-errCh:
+			require.Errorf(t, err, "cycle %d: Start should fail when RFConfiguration errors", i)
+		case <-time.After(2 * time.Second):
+			cancel()
+			t.Fatalf("cycle %d: Start did not return within 2s", i)
+		}
+		cancel()
+		require.NoError(t, session.Close())
+	}
+
+	// Allow any leftover timer goroutines to drain before counting.
+	runtime.GC() //nolint:revive // explicit GC releases lingering timer goroutines
+	time.Sleep(100 * time.Millisecond)
+	runtime.GC() //nolint:revive // second GC catches finalised timer heap entries
+
+	delta := runtime.NumGoroutine() - baseline
+	// A small tolerance covers test-framework goroutines. The reported bug had
+	// thousands of extra goroutines, so any genuine leak dwarfs this threshold.
+	assert.LessOrEqualf(t, delta, 10,
+		"goroutine leak: %d extra goroutines after %d Start/Close cycles", delta, cycles)
+}
+
+// TestSession_Start_InitTimeoutBoundsStart asserts that Start's initial hardware
+// configuration is bounded by startInitTimeout. A transport that blocks
+// SetPollingRetries must not delay Start's exit past that bound, and the
+// caller's cancellation is still observed promptly.
+func TestSession_Start_InitTimeoutBoundsStart(t *testing.T) {
+	t.Parallel()
+
+	device, mockTransport := createMockDeviceWithTransport(t)
+	// Block all commands for much longer than startInitTimeout. The delay path
+	// in MockTransport.SendCommand observes ctx cancellation, so the derived
+	// initCtx timeout (or caller cancellation) will unblock it.
+	mockTransport.SetDelay(30 * time.Second)
+
+	session := NewSession(device, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		errCh <- session.Start(ctx)
+	}()
+
+	// Cancel well before startInitTimeout to prove cancellation is observed
+	// promptly even during the bounded init phase.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err, "Start should fail when ctx is cancelled during init")
+	case <-time.After(startInitTimeout + 2*time.Second):
+		t.Fatal("Start did not return within init timeout bound")
+	}
+
+	elapsed := time.Since(start)
+	// Start must return shortly after cancellation, well before the 5s bound.
+	assert.Lessf(t, elapsed, 2*time.Second,
+		"Start took %v to return after cancellation, expected <2s", elapsed)
+
+	require.NoError(t, session.Close())
+}

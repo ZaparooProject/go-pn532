@@ -173,9 +173,16 @@ func (t *Transport) waitReady() error {
 }
 
 // sleepCtx performs a context-aware sleep. Returns ctx.Err() if context is cancelled.
+// Uses a named timer that is explicitly stopped on cancellation so the underlying
+// runtime timer can be released immediately rather than lingering until it fires.
 func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
-	case <-time.After(d):
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
