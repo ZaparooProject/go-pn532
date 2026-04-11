@@ -1,11 +1,21 @@
 name: PR Title Validation
 
+# Runs under pull_request (not pull_request_target) so the resulting check
+# run is attached to the PR head commit. The repository ruleset requires a
+# "Validate PR Title" check on the PR head; pull_request_target attached it
+# to the base branch's commit instead, which left PRs stuck on
+# "waiting for status to be reported". See #67 for the incident.
+#
+# This workflow does not check out PR code and does not need secrets beyond
+# the default GITHUB_TOKEN, so pull_request is the safer and correct trigger.
+
 on:
-  pull_request_target:
+  pull_request:
     types:
       - opened
       - edited
       - reopened
+      - synchronize
 
 permissions:
   pull-requests: read
