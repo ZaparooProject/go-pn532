@@ -727,7 +727,7 @@ func (t *MIFARETag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 		return err
 	}
 
-	if err := t.clearRemainingBlocks(ctx, t.calculateNextBlock(len(data))); err != nil {
+	if err := t.clearRemainingBlocks(ctx, t.calculateNextBlock(len(data)), usableSectors); err != nil {
 		return err
 	}
 
@@ -925,6 +925,36 @@ func (t *MIFARETag) validateNDEFSize(data []byte) error {
 	return nil
 }
 
+// maxWritableBlocks returns the exclusive upper bound on block indices that
+// NDEF write operations may touch. It starts from the tag size (64 for 1K,
+// 255 for 4K) and, when usableSectors is non-zero, further bounds the result
+// so sectors beyond the successfully-formatted contiguous run are never walked.
+// A usableSectors value of 0 means "no cap" (the tag was already NDEF-formatted
+// before this call).
+//
+// NOTE: the cap formula (usableSectors+1)*4 assumes 4-block sectors throughout,
+// which is correct for MIFARE 1K and sectors 0..31 on 4K. Sectors 32..39 on 4K
+// have 16 blocks each; this helper does not special-case them because the
+// format path (updateSectorKeys, WriteBlockAuto sector arithmetic, etc.) does
+// not yet support large sectors either, so usableSectors can never exceed 31
+// on a 4K tag in practice. Fixing the full 4K large-sector geometry is tracked
+// as a separate follow-up.
+func (t *MIFARETag) maxWritableBlocks(usableSectors uint8) uint8 {
+	var maxBlocks uint8
+	if t.IsMIFARE4K() {
+		maxBlocks = 255 // 4K card has 255 blocks (0-254)
+	} else {
+		maxBlocks = 64 // 1K card has 64 blocks (0-63)
+	}
+	if usableSectors > 0 {
+		capBlock := (usableSectors + 1) * 4
+		if capBlock < maxBlocks {
+			maxBlocks = capBlock
+		}
+	}
+	return maxBlocks
+}
+
 // writeNDEFData writes NDEF bytes sequentially to data blocks starting at
 // sector 1 block 0 (block 4). It skips sector trailers and, when usableSectors
 // is non-zero, refuses to touch any sector beyond that bound — this keeps
@@ -932,24 +962,7 @@ func (t *MIFARETag) validateNDEFSize(data []byte) error {
 // error. A usableSectors value of 0 means "no cap", matching the pre-existing
 // behaviour for tags that were already NDEF-formatted before this call.
 func (t *MIFARETag) writeNDEFData(ctx context.Context, data []byte, usableSectors uint8) error {
-	// Determine max blocks based on card type
-	var maxBlocks uint8
-	if t.IsMIFARE4K() {
-		maxBlocks = 255 // 4K card has 255 blocks (0-254)
-	} else {
-		maxBlocks = 64 // 1K card has 64 blocks (0-63)
-	}
-
-	// When we only successfully formatted a subset of sectors, cap the highest
-	// data block we are willing to touch. Sector N holds blocks N*4..N*4+3 on
-	// MIFARE 1K; we allow up to block (usableSectors+1)*4 exclusive so that
-	// sector `usableSectors` is fully usable.
-	if usableSectors > 0 {
-		capBlock := (usableSectors + 1) * 4
-		if capBlock < maxBlocks {
-			maxBlocks = capBlock
-		}
-	}
+	maxBlocks := t.maxWritableBlocks(usableSectors)
 
 	block := uint8(4)
 	for i := 0; i < len(data); i += mifareBlockSize {
@@ -1005,15 +1018,15 @@ func (*MIFARETag) calculateNextBlock(dataLen int) uint8 {
 // clearRemainingBlocks clears data blocks after NDEF data (best-effort).
 // Write failures to non-essential blocks are intentionally ignored.
 //
+// When usableSectors is non-zero, the cleanup is capped to the same bound
+// writeNDEFData uses, so sectors beyond the successfully-formatted contiguous
+// run are never walked. Prior to this cap the cleanup relied on auth failing
+// at the unformatted boundary to stop the best-effort loop — correct by
+// accident, not by construction — so the cap makes the invariant explicit.
+//
 //nolint:nilerr // Intentional: write errors are ignored for best-effort clearing
-func (t *MIFARETag) clearRemainingBlocks(ctx context.Context, startBlock uint8) error {
-	// Determine max blocks based on card type
-	var maxBlocks uint8
-	if t.IsMIFARE4K() {
-		maxBlocks = 255 // 4K card has 255 blocks (0-254)
-	} else {
-		maxBlocks = 64 // 1K card has 64 blocks (0-63)
-	}
+func (t *MIFARETag) clearRemainingBlocks(ctx context.Context, startBlock, usableSectors uint8) error {
+	maxBlocks := t.maxWritableBlocks(usableSectors)
 
 	block := startBlock
 	for block < maxBlocks {

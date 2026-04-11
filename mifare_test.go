@@ -1258,6 +1258,78 @@ func TestMIFARETag_ValidatePartialFormatCapacity(t *testing.T) {
 	}
 }
 
+// TestMIFARETag_MaxWritableBlocks verifies the block-cap helper used by both
+// writeNDEFData and clearRemainingBlocks. The two call sites must agree on the
+// exclusive upper bound so partial-format cleanup never walks past the sectors
+// that formatForNDEFWithKey actually rekeyed.
+func TestMIFARETag_MaxWritableBlocks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		usableSectors uint8
+		is4K          bool
+		want          uint8
+	}{
+		{
+			name:          "1K_no_cap",
+			is4K:          false,
+			usableSectors: 0,
+			want:          64,
+		},
+		{
+			name:          "1K_cap_1_sector",
+			is4K:          false,
+			usableSectors: 1,
+			want:          8, // sector 1 occupies blocks 4..7
+		},
+		{
+			name:          "1K_cap_2_sectors",
+			is4K:          false,
+			usableSectors: 2,
+			want:          12, // sector 2 occupies blocks 8..11
+		},
+		{
+			name:          "1K_cap_larger_than_tag_clamps_to_64",
+			is4K:          false,
+			usableSectors: 20,
+			want:          64,
+		},
+		{
+			name:          "4K_no_cap",
+			is4K:          true,
+			usableSectors: 0,
+			want:          255,
+		},
+		{
+			name:          "4K_cap_1_sector",
+			is4K:          true,
+			usableSectors: 1,
+			want:          8,
+		},
+		{
+			name:          "4K_cap_31_sectors",
+			is4K:          true,
+			usableSectors: 31,
+			want:          128, // last of the small-sector region
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			device := createMockDevice(t)
+			sak := byte(0x08)
+			if tt.is4K {
+				sak = 0x18
+			}
+			tag := newTestMIFARETag(device, []byte{0x04, 0x12, 0x34, 0x56}, sak)
+			got := tag.maxWritableBlocks(tt.usableSectors)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestMIFARETag_FormatForNDEFWithKey_NoAccessibleSector1 verifies that when
 // sector 1 cannot be authenticated with either the blank key or the NDEF key
 // (because the mock rejects every InDataExchange command), formatForNDEFWithKey
