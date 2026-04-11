@@ -700,23 +700,13 @@ func (t *MIFARETag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 		return sizeErr
 	}
 
-	// A value of 0 means "no sector cap" — either the tag was already formatted
-	// (authenticateWithKeyFallback found the NDEF key on sector 1) or we are
-	// still going to format it below. After formatting, this becomes the number
-	// of contiguous sectors that were successfully re-keyed, which bounds how
-	// much space we can safely use.
-	var usableSectors uint8
-	if authResult.isBlank {
-		formatted, formatErr := t.formatForNDEFWithKey(ctx, authResult.blankKey)
-		if formatErr != nil {
-			return fmt.Errorf("failed to format tag for NDEF: %w", formatErr)
-		}
-		usableSectors = formatted
-		// Reject writes that exceed the actually-formatted capacity rather
-		// than letting writeNDEFData fail partway through.
-		if capErr := t.validatePartialFormatCapacity(data, usableSectors); capErr != nil {
-			return capErr
-		}
+	// A value of 0 means "no sector cap" — the tag was already NDEF-formatted
+	// when authenticateWithKeyFallback found the NDEF key on sector 1. When we
+	// had to format, formatIfNeeded returns the number of contiguous sectors
+	// successfully re-keyed, which bounds how much space we can safely use.
+	usableSectors, err := t.formatIfNeeded(ctx, authResult, data)
+	if err != nil {
+		return err
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -737,6 +727,38 @@ func (t *MIFARETag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 
 	// Verify write by reading back and comparing
 	return t.verifyWrittenNDEFData(ctx, data)
+}
+
+// formatIfNeeded runs the blank-tag format flow and the post-format capacity
+// check when the tag arrived blank. It returns the usableSectors cap to thread
+// through the write path (0 meaning "no cap" for already-formatted tags).
+//
+// formatForNDEFWithKey may return (n > 0, non-nil err) when the contiguous run
+// was halted early but sector 1 was still formatted. This helper treats zero
+// formatted sectors as a hard failure and anything else as a usable partial
+// success — the partial-failure error is kept and chained into the capacity
+// rejection when the payload won't fit, so diagnostics surface *why* the run
+// stopped short of the payload size.
+func (t *MIFARETag) formatIfNeeded(
+	ctx context.Context, authResult *authenticationResult, data []byte,
+) (uint8, error) {
+	if !authResult.isBlank {
+		return 0, nil
+	}
+
+	formatted, formatErr := t.formatForNDEFWithKey(ctx, authResult.blankKey)
+	if formatted == 0 {
+		return 0, fmt.Errorf("failed to format tag for NDEF: %w", formatErr)
+	}
+
+	if capErr := t.validatePartialFormatCapacity(data, formatted); capErr != nil {
+		if formatErr != nil {
+			return 0, fmt.Errorf("%w: format stopped early: %w", capErr, formatErr)
+		}
+		return 0, capErr
+	}
+
+	return formatted, nil
 }
 
 // validatePartialFormatCapacity returns an error if the NDEF payload will not
@@ -1634,7 +1656,12 @@ func (t *MIFARETag) formatForNDEFWithKey(ctx context.Context, blankKey []byte) (
 	// Add a small delay to let the tag process the key changes.
 	time.Sleep(t.config.HardwareDelay)
 
-	return contiguous, nil
+	// formatErr is non-nil when the contiguous run was halted early by a
+	// per-sector failure. We still return contiguous > 0 so the caller can
+	// attempt a partial write, but the error is preserved so diagnostics
+	// (and the capacity-rejection path in WriteNDEF) can report *why* the
+	// run stopped where it did.
+	return contiguous, formatErr
 }
 
 // DebugInfo returns detailed debug information about the MIFARE tag
