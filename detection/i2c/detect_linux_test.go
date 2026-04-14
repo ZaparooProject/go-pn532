@@ -162,6 +162,31 @@ func TestDetectLinux_SafeMode_ContextCancellation(t *testing.T) {
 		"should return promptly after context cancellation")
 }
 
+func TestDetectLinux_SafeMode_ContextCancellation_ReturnsPartialResults(t *testing.T) {
+	saveFns(t)
+
+	// Bus 0 succeeds immediately, buses 1-2 block until context cancels.
+	findI2CBusesFn = fakeBuses("/dev/i2c-0", "/dev/i2c-1", "/dev/i2c-2")
+	probeDeviceFn = func(ctx context.Context, path string, _ detection.Mode) bool {
+		if path == "/dev/i2c-0" {
+			return true
+		}
+		<-ctx.Done()
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	opts := &detection.Options{Mode: detection.Safe}
+	devices, err := detectLinux(ctx, opts)
+
+	require.ErrorIs(t, err, detection.ErrDetectionTimeout)
+	require.Len(t, devices, 1, "must return the one successful probe as partial results")
+	assert.Equal(t, "/dev/i2c-0", devices[0].Path)
+	assert.Equal(t, detection.High, devices[0].Confidence)
+}
+
 func TestDetectLinux_SafeMode_AllProbesFail_ReturnsError(t *testing.T) {
 	saveFns(t)
 

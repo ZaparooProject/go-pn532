@@ -61,10 +61,11 @@ func detectLinux(ctx context.Context, opts *detection.Options) ([]detection.Devi
 		devices = buildPassiveDevices(filtered)
 	}
 
+	if ctx.Err() != nil {
+		return devices, detection.ErrDetectionTimeout
+	}
+
 	if len(devices) == 0 {
-		if ctx.Err() != nil {
-			return nil, detection.ErrDetectionTimeout
-		}
 		return nil, detection.ErrNoDevicesFound
 	}
 
@@ -91,16 +92,24 @@ func buildPassiveDevices(buses []i2cBusInfo) []detection.DeviceInfo {
 	return devices
 }
 
+// probeResult pairs a successful probe with its original bus index so results
+// can be returned in discovery order regardless of goroutine completion order.
+type probeResult struct {
+	info  detection.DeviceInfo
+	index int
+}
+
 // probeI2CBuses probes each bus in parallel and returns only confirmed devices.
+// Results are returned in the same order as the input buses slice.
 // Context cancellation is best-effort: the initial transport open does not accept
 // a context, so goroutines may block on kernel I2C setup until it completes.
 func probeI2CBuses(ctx context.Context, buses []i2cBusInfo, mode detection.Mode) []detection.DeviceInfo {
-	results := make(chan detection.DeviceInfo, len(buses))
+	results := make(chan probeResult, len(buses))
 
 	var wg sync.WaitGroup
-	for _, bus := range buses {
+	for idx, bus := range buses {
 		wg.Add(1)
-		go func(busPath string) {
+		go func(index int, busPath string) {
 			defer wg.Done()
 
 			select {
@@ -111,11 +120,11 @@ func probeI2CBuses(ctx context.Context, buses []i2cBusInfo, mode detection.Mode)
 
 			if probeDeviceFn(ctx, busPath, mode) {
 				pn532.Debugf("i2c: probe succeeded on %s", busPath)
-				results <- makeDeviceInfo(busPath, detection.High)
+				results <- probeResult{index: index, info: makeDeviceInfo(busPath, detection.High)}
 			} else {
 				pn532.Debugf("i2c: probe failed on %s, skipping", busPath)
 			}
-		}(bus.Path)
+		}(idx, bus.Path)
 	}
 
 	go func() {
@@ -123,9 +132,19 @@ func probeI2CBuses(ctx context.Context, buses []i2cBusInfo, mode detection.Mode)
 		close(results)
 	}()
 
-	var devices []detection.DeviceInfo
-	for device := range results {
-		devices = append(devices, device)
+	// Collect results into index-keyed slots, then compact to preserve bus order.
+	slots := make([]detection.DeviceInfo, len(buses))
+	found := make([]bool, len(buses))
+	for result := range results {
+		slots[result.index] = result.info
+		found[result.index] = true
+	}
+
+	devices := make([]detection.DeviceInfo, 0, len(buses))
+	for idx, ok := range found {
+		if ok {
+			devices = append(devices, slots[idx])
+		}
 	}
 	return devices
 }
