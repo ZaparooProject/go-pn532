@@ -3,6 +3,7 @@ package detection
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,6 +97,14 @@ func TestDefaultOptions(t *testing.T) {
 	assert.True(t, opts.EnableCache)
 	assert.Equal(t, 30*time.Second, opts.CacheTTL)
 	assert.NotNil(t, opts.Blocklist)
+	assert.Equal(t, []string{TransportUART}, opts.Transports)
+	assert.NotContains(t, opts.Transports, TransportSPI)
+	assert.NotContains(t, opts.Transports, TransportI2C)
+
+	transports := opts.Transports
+	transports[0] = TransportI2C
+	assert.Equal(t, []string{TransportUART}, DefaultOptions().Transports,
+		"DefaultOptions must return an independent transports slice")
 }
 
 // --- Cache Tests ---
@@ -321,6 +330,14 @@ func (m *MockDetector) Transport() string {
 	return m.transport
 }
 
+func detectorTransports(detectors []Detector) []string {
+	transports := make([]string, 0, len(detectors))
+	for _, detector := range detectors {
+		transports = append(transports, detector.Transport())
+	}
+	return transports
+}
+
 func TestGetDetectors_FilterByTransport(t *testing.T) {
 	// Save and restore original registry
 	originalRegistry := registry
@@ -328,28 +345,102 @@ func TestGetDetectors_FilterByTransport(t *testing.T) {
 
 	// Clear and setup test registry
 	registry = nil
-	RegisterDetector(&MockDetector{transport: "uart"})
-	RegisterDetector(&MockDetector{transport: "i2c"})
-	RegisterDetector(&MockDetector{transport: "spi"})
+	RegisterDetector(&MockDetector{transport: TransportUART})
+	RegisterDetector(&MockDetector{transport: TransportI2C})
+	RegisterDetector(&MockDetector{transport: TransportSPI})
 
 	tests := []struct {
 		name       string
 		transports []string
-		expected   int
+		expected   []string
 	}{
-		{"All transports", nil, 3},
-		{"Empty transports", []string{}, 3},
-		{"Single transport", []string{"uart"}, 1},
-		{"Two transports", []string{"uart", "i2c"}, 2},
-		{"Non-existent transport", []string{"usb"}, 0},
+		{"Default transports from nil", nil, []string{TransportUART}},
+		{"Default transports from empty", []string{}, []string{TransportUART}},
+		{"Single transport", []string{TransportUART}, []string{TransportUART}},
+		{"Explicit SPI opt-in", []string{TransportSPI}, []string{TransportSPI}},
+		{"Explicit I2C opt-in", []string{TransportI2C}, []string{TransportI2C}},
+		{
+			"Explicit all transports",
+			[]string{TransportUART, TransportSPI, TransportI2C},
+			[]string{TransportUART, TransportI2C, TransportSPI},
+		},
+		{"Non-existent transport", []string{"usb"}, []string{}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result := getDetectors(tc.transports)
-			assert.Len(t, result, tc.expected)
+			assert.Equal(t, tc.expected, detectorTransports(result))
 		})
 	}
+}
+
+type CountingDetector struct {
+	transport string
+	calls     atomic.Int32
+}
+
+func (d *CountingDetector) Detect(_ context.Context, _ *Options) ([]DeviceInfo, error) {
+	d.calls.Add(1)
+	return nil, ErrNoDevicesFound
+}
+
+func (d *CountingDetector) Transport() string {
+	return d.transport
+}
+
+func TestDetectAll_DefaultOnlyInvokesUART(t *testing.T) {
+	originalRegistry := registry
+	defer func() { registry = originalRegistry }()
+
+	uart := &CountingDetector{transport: TransportUART}
+	spi := &CountingDetector{transport: TransportSPI}
+	i2c := &CountingDetector{transport: TransportI2C}
+
+	registry = nil
+	RegisterDetector(uart)
+	RegisterDetector(i2c)
+	RegisterDetector(spi)
+
+	opts := DefaultOptions()
+	opts.EnableCache = false
+
+	_, err := DetectAll(context.Background(), &opts)
+	require.ErrorIs(t, err, ErrNoDevicesFound)
+	assert.Equal(t, int32(1), uart.calls.Load())
+	assert.Equal(t, int32(0), spi.calls.Load())
+	assert.Equal(t, int32(0), i2c.calls.Load())
+}
+
+func TestDetectAll_ExplicitSPIOptIn(t *testing.T) {
+	assertExplicitTransportOptIn(t, TransportSPI)
+}
+
+func TestDetectAll_ExplicitI2COptIn(t *testing.T) {
+	assertExplicitTransportOptIn(t, TransportI2C)
+}
+
+func assertExplicitTransportOptIn(t *testing.T, transport string) {
+	t.Helper()
+
+	originalRegistry := registry
+	defer func() { registry = originalRegistry }()
+
+	uart := &CountingDetector{transport: TransportUART}
+	selected := &CountingDetector{transport: transport}
+
+	registry = nil
+	RegisterDetector(uart)
+	RegisterDetector(selected)
+
+	opts := DefaultOptions()
+	opts.EnableCache = false
+	opts.Transports = []string{transport}
+
+	_, err := DetectAll(context.Background(), &opts)
+	require.ErrorIs(t, err, ErrNoDevicesFound)
+	assert.Equal(t, int32(0), uart.calls.Load())
+	assert.Equal(t, int32(1), selected.calls.Load())
 }
 
 // --- DetectAll Error Cases ---
@@ -382,6 +473,7 @@ func TestDetectAll_Timeout(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Timeout = 10 * time.Millisecond
 	opts.EnableCache = false
+	opts.Transports = []string{"blocking"}
 
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
 	defer cancel()

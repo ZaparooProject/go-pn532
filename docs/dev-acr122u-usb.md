@@ -97,13 +97,18 @@ sudo usermod -a -G plugdev $USER
 The ACR122U detector automatically finds devices via both PC/SC and USB:
 
 ```go
-devices, err := detection.DetectAll(detection.DefaultOptions())
+opts := detection.DefaultOptions()
+devices, err := detection.DetectAll(context.Background(), &opts)
 for _, device := range devices {
     if device.Transport == "acr122u" {
         fmt.Printf("Found: %s (mode: %s)\n", device.Name, device.Metadata["mode"])
     }
 }
 ```
+
+`DefaultOptions` only auto-detects UART by default. To probe shared buses, opt in
+explicitly with `opts.Transports = []string{detection.TransportSPI}` or
+`opts.Transports = []string{detection.TransportI2C}`.
 
 ## Example Usage
 

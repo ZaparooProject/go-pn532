@@ -340,11 +340,10 @@ func connectAutoDetected(ctx context.Context, config *connectConfig) (*Device, e
 		return nil, err
 	}
 
-	// Prefer quiet transports first. UART and SPI open cleanly on desktop
-	// Linux; periph.io's host.Init() (called on first I2C/SPI transport
-	// construction) loudly logs a /dev/gpiochip0 permission warning via
-	// gpioioctl whenever the user isn't in the gpio group. If UART is
-	// present we never want to touch that code path, so we try UART
+	// Prefer quiet transports first. periph.io's host.Init() (called on first
+	// I2C/SPI transport construction) loudly logs a /dev/gpiochip0 permission
+	// warning via gpioioctl whenever the user isn't in the gpio group. If UART
+	// is present we never want to touch that code path, so we try UART
 	// candidates before I2C/SPI. This is a transport-kind preference, not
 	// a confidence sort: any working candidate will still win.
 	sortCandidatesByTransportPreference(devices)
