@@ -604,13 +604,35 @@ func TestConnectDevice_AutoDetect_AggregatesWhenAllFail(t *testing.T) {
 	assert.False(t, second.IsConnected(), "second failed transport must be closed")
 }
 
+func TestConnectDevice_AutoDetect_UsesSafeDefaultTransports(t *testing.T) {
+	t.Parallel()
+
+	var capturedTransports []string
+	mockDetector := func(_ context.Context, opts *detection.Options) ([]detection.DeviceInfo, error) {
+		capturedTransports = append([]string(nil), opts.Transports...)
+		return nil, detection.ErrNoDevicesFound
+	}
+
+	device, err := ConnectDevice(context.Background(), "",
+		WithAutoDetection(),
+		WithTransportFromDeviceFactory(func(_ detection.DeviceInfo) (Transport, error) {
+			return NewMockTransport(), nil
+		}),
+		WithDeviceDetector(mockDetector))
+	require.Error(t, err)
+	assert.Nil(t, device)
+	assert.Equal(t, []string{detection.TransportUART}, capturedTransports)
+	assert.NotContains(t, capturedTransports, detection.TransportSPI)
+	assert.NotContains(t, capturedTransports, detection.TransportI2C)
+}
+
 // TestConnectDevice_AutoDetect_PrefersUARTOverI2C verifies that when the
 // detector returns a mix of transport types, auto-detection tries UART
-// candidates before I2C (and SPI before I2C) so a working UART PN532
-// succeeds without ever constructing an I2C transport. This matters on
-// Linux desktops where the I2C transport's host.Init() call logs a
-// gpioioctl /dev/gpiochip0 permission warning for users not in the gpio
-// group — we want that warning to stay silent whenever UART works.
+// candidates before I2C/SPI so a working UART PN532 succeeds without ever
+// constructing a bus transport. This matters on Linux desktops where
+// periph.io's host.Init() call logs a gpioioctl /dev/gpiochip0 permission
+// warning for users not in the gpio group — we want that warning to stay
+// silent whenever UART works.
 func TestConnectDevice_AutoDetect_PrefersUARTOverI2C(t *testing.T) {
 	t.Parallel()
 

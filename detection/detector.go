@@ -26,6 +26,16 @@ import (
 type Mode int
 
 const (
+	// TransportUART identifies UART/serial PN532 detection.
+	TransportUART = "uart"
+	// TransportSPI identifies SPI PN532 detection.
+	TransportSPI = "spi"
+	// TransportI2C identifies I2C PN532 detection. I2C probing can be unsafe on
+	// some platforms, so it is not part of the default auto-detect transports.
+	TransportI2C = "i2c"
+)
+
+const (
 	// Passive mode only checks device descriptors without any communication
 	Passive Mode = iota
 	// Safe mode performs minimal probing with GetFirmwareVersion command
@@ -80,7 +90,8 @@ type Options struct {
 	Blocklist []string
 	// Device paths to explicitly ignore (e.g., ["/dev/ttyUSB0", "COM2"])
 	IgnorePaths []string
-	// Which transports to check (empty = all)
+	// Which transports to check. Empty means the safe default, UART only;
+	// include TransportSPI or TransportI2C explicitly to opt into bus probing.
 	Transports []string
 	// Cache TTL duration
 	CacheTTL time.Duration
@@ -92,12 +103,20 @@ type Options struct {
 	EnableCache bool
 }
 
-// DefaultOptions returns sensible default detection options
+// DefaultTransports returns the safe default transports used for auto-detect.
+// SPI and I2C are intentionally excluded because probing shared buses may be
+// unsafe on some platforms; include them explicitly when bus detection is wanted.
+func DefaultTransports() []string {
+	return []string{TransportUART}
+}
+
+// DefaultOptions returns sensible default detection options.
 func DefaultOptions() Options {
 	return Options{
 		Mode:        Safe,
 		Timeout:     5 * time.Second,
 		Blocklist:   DefaultBlocklist(),
+		Transports:  DefaultTransports(),
 		EnableCache: true,
 		CacheTTL:    30 * time.Second,
 	}
@@ -132,7 +151,7 @@ func RegisterDetector(d Detector) {
 // getDetectors returns detectors filtered by transport types
 func getDetectors(transports []string) []Detector {
 	if len(transports) == 0 {
-		return registry
+		transports = DefaultTransports()
 	}
 
 	var filtered []Detector
