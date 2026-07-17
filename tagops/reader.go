@@ -158,14 +158,7 @@ func (t *TagOperations) tryFastRead(ctx context.Context, currentPage, chunkEnd b
 		return nil, 0
 	}
 
-	cmd := []byte{0x3A, currentPage, chunkEnd}
-	data, err := t.device.SendRawCommand(ctx, cmd)
-
-	// Re-select target after SendRawCommand to restore PN532 internal state
-	// SendRawCommand uses InCommunicateThru which doesn't maintain target selection
-	if selectErr := t.device.InSelect(ctx); selectErr != nil {
-		pn532.Debugln("tagops tryFastRead: InSelect failed (non-fatal):", selectErr)
-	}
+	data, err := t.ntagInstance.FastRead(ctx, currentPage, chunkEnd)
 
 	if err == nil {
 		return data, chunkEnd + 1
@@ -181,7 +174,7 @@ func (t *TagOperations) readPagesIndividually(
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err
 		}
-		pageData, err := t.device.SendDataExchange(ctx, []byte{0x30, page})
+		pageData, err := t.ntagInstance.ReadBlock(ctx, page)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to read page %d: %w", page, err)
 		}
