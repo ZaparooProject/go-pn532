@@ -205,8 +205,10 @@ func (t *Transport) handleNormalResponse(ctx context.Context, ackData []byte) ([
 		return nil, t.currentTrace.WrapError(err)
 	}
 
-	if err := t.sendAck(ctx); err != nil {
-		return nil, t.currentTrace.WrapError(err)
+	if t.profile != profilePN532Killer {
+		if err := t.sendAck(ctx); err != nil {
+			return nil, t.currentTrace.WrapError(err)
+		}
 	}
 
 	t.connectionEstablished = true

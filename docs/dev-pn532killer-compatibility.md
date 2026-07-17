@@ -16,7 +16,7 @@ The compatibility profile is selected automatically only when the serial device 
 
 Matching is case-insensitive and ignores surrounding whitespace. Serial-device symlinks are resolved before matching. If enumeration fails or any identity field is missing or different, the generic PN532 UART profile is used intentionally.
 
-The PN532Killer profile opens the port with DTR and RTS deasserted. Reconnects reuse the profile selected during the initial open.
+The PN532Killer profile opens the port with DTR and RTS deasserted and omits the host ACK normally sent after a PN532 response. Reconnects reuse the profile selected during the initial open.
 
 ## Supported operations
 

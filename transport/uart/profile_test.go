@@ -5,6 +5,8 @@
 package uart
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -113,4 +115,49 @@ func TestPN532KillerProfilePersistsAcrossReconnect(t *testing.T) {
 		assert.False(t, mode.InitialStatusBits.RTS)
 	}
 	assert.True(t, transport.HasCapability(pn532.CapabilityRequiresRawType2Commands))
+}
+
+type recordingSerialPort struct {
+	serial.Port
+	writes [][]byte
+}
+
+func (p *recordingSerialPort) Write(data []byte) (int, error) {
+	p.writes = append(p.writes, append([]byte(nil), data...))
+	return p.Port.Write(data)
+}
+
+func TestResponseACKProfileBehavior(t *testing.T) {
+	tests := []struct {
+		name        string
+		profile     deviceProfile
+		wantHostACK bool
+	}{
+		{name: "generic UART sends response ACK", profile: profileGeneric, wantHostACK: true},
+		{name: "PN532Killer omits response ACK", profile: profilePN532Killer, wantHostACK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			port := &recordingSerialPort{Port: NewMockSerialPort(virt.NewVirtualPN532())}
+			transport := &Transport{
+				port:           port,
+				portName:       "mock://profile-test",
+				currentTimeout: getReadTimeout(),
+				profile:        tt.profile,
+			}
+
+			_, err := transport.SendCommand(context.Background(), 0x02, nil)
+			require.NoError(t, err)
+
+			hasHostACK := false
+			for _, write := range port.writes {
+				if bytes.Equal(write, ackFrame) {
+					hasHostACK = true
+					break
+				}
+			}
+			assert.Equal(t, tt.wantHostACK, hasHostACK)
+		})
+	}
 }
