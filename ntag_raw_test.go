@@ -78,6 +78,7 @@ func TestNTAGTagRawType2ReadBlock(t *testing.T) {
 	assert.Equal(t, []byte{0x01, 0x02, 0x03, 0x04}, data)
 	assert.Equal(t, [][]byte{{ntagCmdRead, 0x04, 0x26, 0xEE}}, transport.commandData(cmdInCommunicateThru))
 	assert.Zero(t, transport.GetCallCount(cmdInDataExchange))
+	assert.Zero(t, transport.GetCallCount(cmdInSelect))
 }
 
 func TestNTAGTagRawType2WriteResponses(t *testing.T) {
@@ -166,9 +167,13 @@ func TestNTAGTagRawType2ReadNDEF(t *testing.T) {
 	}
 	headerResponse := append([]byte{0x43, 0x00}, ndefData...)
 	headerResponse = append(headerResponse, 0xAA, 0xBB)
-	fastReadResponse := append([]byte{0x43, 0x00}, ndefData...)
-	fastReadResponse = append(fastReadResponse, 0xCC, 0xDD)
-	transport.QueueResponses(cmdInCommunicateThru, headerResponse, fastReadResponse)
+	transport.QueueResponse(cmdInCommunicateThru, headerResponse)
+	for offset := 0; offset < len(ndefData); offset += ntagBlockSize {
+		readData := make([]byte, 16)
+		copy(readData, ndefData[offset:])
+		blockResponse := append([]byte{0x43, 0x00}, readData...)
+		transport.QueueResponse(cmdInCommunicateThru, append(blockResponse, 0xCC, 0xDD))
+	}
 
 	tag := NewNTAGTag(device, []byte{0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, 0)
 	tag.tagType = NTAGType213
@@ -177,7 +182,13 @@ func TestNTAGTagRawType2ReadNDEF(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, message.Records, 1)
 	assert.Equal(t, "Hello!", message.Records[0].Text)
+	commands := transport.commandData(cmdInCommunicateThru)
+	require.Len(t, commands, 5)
+	for _, command := range commands {
+		assert.Equal(t, byte(ntagCmdRead), command[0])
+	}
 	assert.Zero(t, transport.GetCallCount(cmdInDataExchange))
+	assert.Zero(t, transport.GetCallCount(cmdInSelect))
 }
 
 func TestNTAGTagRawType2WriteNDEFAndVerify(t *testing.T) {

@@ -285,11 +285,12 @@ func (t *NTAGTag) ReadNDEF(ctx context.Context) (*NDEFMessage, error) {
 		return &NDEFMessage{}, nil
 	}
 
-	// Ensure target is selected before reading. This is defensive against any prior
-	// operations that may have used InCommunicateThru (0x42), which doesn't maintain
-	// the PN532's target selection state. See PN532 User Manual §7.3.9.
-	if err := t.device.InSelect(ctx); err != nil {
-		Debugln("NTAG ReadNDEF: InSelect failed, continuing anyway:", err)
+	// Ensure target is selected before reading on standard transports. Raw Type 2
+	// transports preserve selection themselves and may not return an InSelect response.
+	if !t.requiresRawType2Commands() {
+		if err := t.device.InSelect(ctx); err != nil {
+			Debugln("NTAG ReadNDEF: InSelect failed, continuing anyway:", err)
+		}
 	}
 
 	header, err := t.readNDEFHeader(ctx)
@@ -318,6 +319,11 @@ func (t *NTAGTag) ReadNDEF(ctx context.Context) (*NDEFMessage, error) {
 	// NXP genuine tags have UID prefix 0x04.
 	if len(t.uid) > 0 && t.uid[0] != 0x04 {
 		Debugf("NTAG ReadNDEF: non-NXP UID prefix 0x%02X, skipping FAST_READ for clone compatibility", t.uid[0])
+		return t.readNDEFBlockByBlock(ctx)
+	}
+	// Raw Type 2 transports can reject FAST_READ with a card framing error even
+	// while standard READ works. Prefer the universally supported command for NDEF.
+	if t.requiresRawType2Commands() {
 		return t.readNDEFBlockByBlock(ctx)
 	}
 
@@ -1349,8 +1355,10 @@ func (t *NTAGTag) canAccessPage(ctx context.Context, page uint8) bool {
 		data, err = t.device.SendDataExchange(ctx, []byte{ntagCmdRead, page})
 	}
 	if err != nil {
-		// Re-select target to recover from NAK/timeout errors
-		_ = t.device.InSelect(ctx)
+		// Re-select standard transports to recover from NAK/timeout errors.
+		if !t.requiresRawType2Commands() {
+			_ = t.device.InSelect(ctx)
+		}
 		return false
 	}
 	return len(data) >= 4

@@ -22,7 +22,7 @@ The PN532Killer profile opens the port with DTR and RTS deasserted and omits the
 
 - Reader initialization and automatic detection
 - NFC Forum Type 2 and NTAG UID detection
-- NTAG page and fast reads
+- NTAG page reads and NDEF reads with automatic fallback when `FAST_READ` is unavailable
 - NTAG page writes with Type 2 ACK validation
 - NDEF reads and writes on supported NTAG21x tags
 - NTAG version and password-authentication commands
@@ -32,6 +32,7 @@ PN532Killer Type 2 commands use `InCommunicateThru` with ISO/IEC 14443-A CRC byt
 ## Limitations
 
 - MIFARE operations continue to use the existing implementation but are not included in the PN532Killer compatibility claim.
+- The observed firmware acknowledges `InSelect` without returning a response and reports framing error `0x05` for `FAST_READ`. The compatibility path preserves selection without `InSelect` and uses standard Type 2 `READ` commands for NDEF data.
 - Card emulation, traffic sniffing, ISO15693, and PN532Killer-specific extended features are not supported by this integration.
 - There is no firmware-version gate. Compatibility assumes firmware with the same initialization and raw Type 2 behavior as the supported hardware.
 - There is no manual override for incomplete USB metadata. This prevents an unrelated device with the same USB bridge from receiving incompatible serial and tag-command behavior.

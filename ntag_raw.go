@@ -42,11 +42,10 @@ func appendCRCA(data []byte) []byte {
 }
 
 func (t *NTAGTag) sendRawType2Command(ctx context.Context, command []byte) ([]byte, error) {
-	data, err := t.device.SendRawCommand(ctx, appendCRCA(command))
-	if selectErr := t.device.InSelect(ctx); selectErr != nil {
-		Debugln("NTAG raw Type 2 command: InSelect failed:", selectErr)
-	}
-	return data, err
+	// Raw Type 2 transports preserve the active target themselves. Some acknowledge
+	// InSelect without ever returning its response, which stalls and disrupts the
+	// following exchange.
+	return t.device.SendRawCommand(ctx, appendCRCA(command))
 }
 
 func (t *NTAGTag) readRawType2Pages(ctx context.Context, startPage uint8, expectedBytes int) ([]byte, error) {
