@@ -16,7 +16,9 @@
 package pn532
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -57,4 +59,27 @@ func (t *NTAGTag) readRawType2Pages(ctx context.Context, startPage uint8, expect
 		return nil, fmt.Errorf("invalid raw READ response length %d (expected at least %d)", len(data), expectedBytes)
 	}
 	return data[:expectedBytes], nil
+}
+
+func isRawType2WriteFramingError(err error) bool {
+	var pn532Err *PN532Error
+	return errors.As(err, &pn532Err) &&
+		pn532Err.Command == "InCommunicateThru" && pn532Err.ErrorCode == 0x05
+}
+
+func (t *NTAGTag) verifyRawType2WriteAfterFramingError(
+	ctx context.Context, block uint8, expected []byte, writeErr error,
+) error {
+	actual, err := t.readRawType2Pages(ctx, block, ntagBlockSize)
+	if err != nil {
+		return fmt.Errorf("%w (block %d): ambiguous Type 2 ACK (%v); verification read failed: %w",
+			ErrTagWriteFailed, block, writeErr, err)
+	}
+	if !bytes.Equal(actual, expected) {
+		return fmt.Errorf("%w (block %d): %w after ambiguous Type 2 ACK: expected %X, got %X",
+			ErrTagWriteFailed, block, ErrWriteVerificationFailed, expected, actual)
+	}
+
+	Debugf("NTAG raw Type 2 write block %d verified after framing status", block)
+	return nil
 }

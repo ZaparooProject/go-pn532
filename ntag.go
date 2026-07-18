@@ -226,6 +226,11 @@ func (t *NTAGTag) WriteBlock(ctx context.Context, block uint8, data []byte) erro
 	if t.requiresRawType2Commands() {
 		response, err := t.sendRawType2Command(ctx, cmd)
 		if err != nil {
+			// Some raw transports surface the tag's four-bit write ACK as PN532
+			// framing status 0x05. Treat it as ambiguous and require exact readback.
+			if isRawType2WriteFramingError(err) {
+				return t.verifyRawType2WriteAfterFramingError(ctx, block, data, err)
+			}
 			return fmt.Errorf("%w (block %d): %w", ErrTagWriteFailed, block, err)
 		}
 		if len(response) == 0 {

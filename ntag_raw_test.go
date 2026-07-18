@@ -115,6 +115,53 @@ func TestNTAGTagRawType2WriteResponses(t *testing.T) {
 	}
 }
 
+func TestNTAGTagRawType2WriteFramingStatusRequiresReadback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		readbackResponse []byte
+		wantError        string
+	}{
+		{
+			name:             "matching readback",
+			readbackResponse: []byte{0x43, 0x00, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:             "mismatched readback",
+			readbackResponse: []byte{0x43, 0x00, 1, 2, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+			wantError:        "verification failed",
+		},
+		{
+			name:             "readback failure",
+			readbackResponse: []byte{0x43, 0x01},
+			wantError:        "verification read failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			device, transport := newRawType2Device(t)
+			transport.QueueResponses(cmdInCommunicateThru, []byte{0x43, 0x05}, tt.readbackResponse)
+			tag := NewNTAGTag(device, []byte{0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, 0)
+			tag.tagType = NTAGType213
+
+			err := tag.WriteBlock(context.Background(), 4, []byte{1, 2, 3, 4})
+			if tt.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tt.wantError)
+			}
+			assert.Equal(t, [][]byte{
+				{ntagCmdWrite, 0x04, 1, 2, 3, 4, 0x78, 0x57},
+				{ntagCmdRead, 0x04, 0x26, 0xEE},
+			}, transport.commandData(cmdInCommunicateThru))
+			assert.Zero(t, transport.GetCallCount(cmdInDataExchange))
+		})
+	}
+}
+
 func TestNTAGTagRawType2SpecialCommands(t *testing.T) {
 	t.Parallel()
 
