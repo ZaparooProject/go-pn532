@@ -17,13 +17,21 @@ package pn532
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
+
+	"github.com/ZaparooProject/go-pn532/internal/syncutil"
 )
 
-// debugEnabled controls whether debug logging is active
-// This can be controlled via build tags or environment variables
-var debugEnabled = false
+var (
+	// debugEnabled controls whether debug logging is active. This can be
+	// controlled via environment variables or SetDebugEnabled.
+	debugEnabled = false
+
+	externalDebugWriter   io.Writer
+	externalDebugWriterMu syncutil.Mutex
+)
 
 func init() {
 	// Enable debug logging if DEBUG environment variable is set
@@ -32,9 +40,8 @@ func init() {
 	}
 }
 
-// Debugf prints debug information.
-// Always writes to session log file (if initialized) with timestamp.
-// Only prints to console when debug mode is enabled.
+// Debugf writes formatted debug information to configured log destinations.
+// Console output remains gated by debug mode.
 func Debugf(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 
@@ -43,6 +50,7 @@ func Debugf(format string, args ...any) {
 		timestamp := time.Now().Format("15:04:05.000")
 		_, _ = fmt.Fprintf(sessionLogWriter, "%s DEBUG: %s\n", timestamp, message)
 	}
+	writeExternalDebug(message)
 
 	// Only print to console if debug enabled
 	if debugEnabled {
@@ -50,9 +58,8 @@ func Debugf(format string, args ...any) {
 	}
 }
 
-// Debugln prints debug information.
-// Always writes to session log file (if initialized) with timestamp.
-// Only prints to console when debug mode is enabled.
+// Debugln writes debug information to configured log destinations.
+// Console output remains gated by debug mode.
 func Debugln(args ...any) {
 	message := fmt.Sprint(args...)
 
@@ -61,6 +68,7 @@ func Debugln(args ...any) {
 		timestamp := time.Now().Format("15:04:05.000")
 		_, _ = fmt.Fprintf(sessionLogWriter, "%s DEBUG: %s\n", timestamp, message)
 	}
+	writeExternalDebug(message)
 
 	// Only print to console if debug enabled
 	if debugEnabled {
@@ -73,4 +81,23 @@ func Debugln(args ...any) {
 // Useful for testing or application-controlled debug modes
 func SetDebugEnabled(enabled bool) {
 	debugEnabled = enabled
+}
+
+// SetDebugWriter sets an optional secondary destination for Debugf and Debugln.
+// Passing nil disables the destination. It does not affect session logs or
+// console output.
+func SetDebugWriter(w io.Writer) {
+	externalDebugWriterMu.Lock()
+	defer externalDebugWriterMu.Unlock()
+	externalDebugWriter = w
+}
+
+func writeExternalDebug(message string) {
+	externalDebugWriterMu.Lock()
+	defer externalDebugWriterMu.Unlock()
+	if externalDebugWriter == nil {
+		return
+	}
+	timestamp := time.Now().Format("15:04:05.000")
+	_, _ = fmt.Fprintf(externalDebugWriter, "%s DEBUG: %s\n", timestamp, message)
 }

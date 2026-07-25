@@ -145,6 +145,34 @@ func TestSetDebugEnabled(t *testing.T) {
 	assert.True(t, debugEnabled)
 }
 
+func TestSetDebugWriter(t *testing.T) {
+	origEnabled, origWriter := saveDebugState()
+	t.Cleanup(func() {
+		SetDebugWriter(nil)
+		restoreDebugState(origEnabled, origWriter)
+	})
+
+	var sessionBuf bytes.Buffer
+	var externalBuf bytes.Buffer
+	sessionLogWriter = &sessionBuf
+	debugEnabled = false
+	SetDebugWriter(&externalBuf)
+
+	Debugf("formatted %d", 42)
+	Debugln("plain message")
+
+	assert.Contains(t, sessionBuf.String(), "DEBUG: formatted 42")
+	assert.Contains(t, sessionBuf.String(), "DEBUG: plain message")
+	assert.Contains(t, externalBuf.String(), "DEBUG: formatted 42")
+	assert.Contains(t, externalBuf.String(), "DEBUG: plain message")
+
+	beforeDisable := externalBuf.String()
+	SetDebugWriter(nil)
+	Debugf("session only")
+	assert.Equal(t, beforeDisable, externalBuf.String())
+	assert.Contains(t, sessionBuf.String(), "DEBUG: session only")
+}
+
 func TestDebugf_MultipleMessages(t *testing.T) {
 	origEnabled, origWriter := saveDebugState()
 	t.Cleanup(func() {
