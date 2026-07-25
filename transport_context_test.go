@@ -168,16 +168,18 @@ type contextTestCase struct {
 }
 
 // createContextForTest creates appropriate context based on test case
-func createContextForTest(tt contextTestCase) (context.Context, context.CancelFunc) {
+func createContextForTest(t *testing.T, tt contextTestCase) context.Context {
+	t.Helper()
 	if tt.contextTimeout == 0 {
 		// Immediate cancellation
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
-		return ctx, cancel
+		return ctx
 	}
 	// Timeout after specified duration
-	//nolint:gosec // cancel is returned to the caller, which defers it
-	return context.WithTimeout(context.Background(), tt.contextTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), tt.contextTimeout)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // validateContextError checks if the error type and timing match expectations
@@ -253,8 +255,7 @@ func TestContextCancellationDuringOperationPhases(t *testing.T) {
 			mock := NewMockTransport()
 			mock.SetDelay(tt.setupDelay)
 
-			ctx, cancel := createContextForTest(tt)
-			defer cancel()
+			ctx := createContextForTest(t, tt)
 
 			cmd := byte(0x02) // GetFirmwareVersion
 			args := []byte{}
