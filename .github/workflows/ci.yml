@@ -108,14 +108,18 @@ jobs:
 
     - name: Run fuzz tests (quick)
       run: |
-        # Run each fuzz test for 10 seconds to catch obvious issues
+        # Budget each fuzz test in executions rather than wall time. A duration
+        # makes the fuzzing engine build a deadline context, and a worker that is
+        # mid-call when it expires reports "context deadline exceeded" as a test
+        # failure. An execution count leaves that context unset, so the run ends
+        # on the limit instead. 1000000x is roughly the previous 10s budget.
         # Corpus files from testdata/fuzz/ are also run as regression tests
-        go test -fuzz=FuzzValidateFrameLength -fuzztime=10s ./internal/frame/
-        go test -fuzz=FuzzValidateFrameChecksum -fuzztime=10s ./internal/frame/
-        go test -fuzz=FuzzExtractFrameData -fuzztime=10s ./internal/frame/
-        go test -fuzz=FuzzHandleErrorFrame -fuzztime=10s ./internal/frame/
-        go test -fuzz=FuzzCalculateChecksum -fuzztime=10s ./internal/frame/
-        go test -fuzz=FuzzBufferPool -fuzztime=10s ./internal/frame/
+        go test -fuzz=FuzzValidateFrameLength -fuzztime=1000000x ./internal/frame/
+        go test -fuzz=FuzzValidateFrameChecksum -fuzztime=1000000x ./internal/frame/
+        go test -fuzz=FuzzExtractFrameData -fuzztime=1000000x ./internal/frame/
+        go test -fuzz=FuzzHandleErrorFrame -fuzztime=1000000x ./internal/frame/
+        go test -fuzz=FuzzCalculateChecksum -fuzztime=1000000x ./internal/frame/
+        go test -fuzz=FuzzBufferPool -fuzztime=1000000x ./internal/frame/
 
   lint:
     needs: changes
@@ -200,9 +204,9 @@ jobs:
       run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        file: ./coverage.txt
+        files: ./coverage.txt
         flags: unittests
         fail_ci_if_error: false

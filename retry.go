@@ -64,16 +64,13 @@ func RetryWithConfig(ctx context.Context, config *RetryConfig, retryFunc Retryab
 		return retryFunc()
 	}
 
-	retryCtx, cancel := setupRetryContext(ctx, config)
-	defer cancel()
-	return executeWithRetry(retryCtx, config, retryFunc)
-}
-
-func setupRetryContext(ctx context.Context, config *RetryConfig) (context.Context, context.CancelFunc) {
+	retryCtx := ctx
 	if config.RetryTimeout > 0 {
-		return context.WithTimeout(ctx, config.RetryTimeout)
+		var cancel context.CancelFunc
+		retryCtx, cancel = context.WithTimeout(ctx, config.RetryTimeout)
+		defer cancel()
 	}
-	return ctx, func() {}
+	return executeWithRetry(retryCtx, config, retryFunc)
 }
 
 func executeWithRetry(ctx context.Context, config *RetryConfig, retryFunc RetryableFunc) error {

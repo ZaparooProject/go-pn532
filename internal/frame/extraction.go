@@ -42,6 +42,10 @@ const (
 	FrameBufferSize  = 270 // Complete frame with all overhead (262 + 8)
 )
 
+// tfiOffset is the distance from the frame length field to the TFI byte,
+// skipping the length and length-checksum bytes.
+const tfiOffset = 2
+
 // Global buffer pool instance
 var defaultPool = NewBufferPool()
 
@@ -201,10 +205,11 @@ func ExtractFrameData(buf []byte, off, frameLen int, tfiExpected byte) (data []b
 		}
 	}
 
-	// Move to TFI position (skip length and length checksum)
-	off += 2
-
-	if off >= len(buf) {
+	// Move to TFI position (skip length and length checksum).
+	// Compare against the space remaining in buf rather than adding to off
+	// first: a corrupt offset close to the maximum int would wrap negative and
+	// then index buf out of bounds.
+	if off >= len(buf)-tfiOffset {
 		return nil, false, &pn532.TransportError{
 			Op:        "extractFrameData",
 			Err:       pn532.ErrFrameCorrupted,
@@ -212,6 +217,8 @@ func ExtractFrameData(buf []byte, off, frameLen int, tfiExpected byte) (data []b
 			Retryable: true,
 		}
 	}
+
+	off += tfiOffset
 
 	tfi := buf[off]
 
@@ -227,7 +234,13 @@ func ExtractFrameData(buf []byte, off, frameLen int, tfiExpected byte) (data []b
 
 	// Extract frame data (skip TFI)
 	off++
-	if off+frameLen-1 > len(buf) {
+
+	// Bound dataLen by the bytes left in buf. Written as a subtraction so a
+	// corrupt frameLen close to the maximum int cannot overflow the sum and
+	// pass this check, which would size the buffer below from unvalidated
+	// hardware data.
+	dataLen := frameLen - 1
+	if dataLen > len(buf)-off {
 		return nil, false, &pn532.TransportError{
 			Op:        "extractFrameData",
 			Err:       pn532.ErrFrameCorrupted,
@@ -237,7 +250,6 @@ func ExtractFrameData(buf []byte, off, frameLen int, tfiExpected byte) (data []b
 	}
 
 	// Use buffer pool to reduce allocations - this is a major optimization
-	dataLen := frameLen - 1
 	data = GetBuffer(dataLen)
 	copy(data, buf[off:off+dataLen])
 

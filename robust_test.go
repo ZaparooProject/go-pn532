@@ -557,6 +557,7 @@ func TestWriteNDEFWithRetry(t *testing.T) {
 		t.Parallel()
 
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
 		var attempts int32
 		writeFunc := func(_ context.Context) error {

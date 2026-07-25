@@ -331,6 +331,7 @@ func TestSession_WriteToTag(t *testing.T) {
 		// Create separate contexts - session ctx stays active, write ctx gets cancelled
 		sessionCtx := context.Background()
 		writeCtx, cancelWrite := context.WithCancel(context.Background())
+		defer cancelWrite()
 
 		detectedTag := createTestDetectedTag()
 		writeCalled := false
@@ -360,6 +361,7 @@ func TestSession_WriteToTag(t *testing.T) {
 
 		// Create a context that will be cancelled before the stabilization delay completes
 		writeCtx, cancelWrite := context.WithCancel(context.Background())
+		defer cancelWrite()
 
 		detectedTag := createTestDetectedTag()
 		writeCalled := false
@@ -1000,6 +1002,7 @@ func TestSession_WriteToNextTag(t *testing.T) {
 		// Create separate contexts - session ctx stays active, write ctx gets cancelled
 		sessionCtx := context.Background()
 		writeCtx, cancelWrite := context.WithCancel(context.Background())
+		defer cancelWrite()
 
 		writeCalled := false
 		err := session.WriteToNextTag(
