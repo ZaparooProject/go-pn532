@@ -176,7 +176,6 @@ func createContextForTest(tt contextTestCase) (context.Context, context.CancelFu
 		return ctx, cancel
 	}
 	// Timeout after specified duration
-	//nolint:gosec // CancelFunc is returned to and deferred by each caller.
 	return context.WithTimeout(context.Background(), tt.contextTimeout)
 }
 
