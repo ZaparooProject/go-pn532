@@ -22,16 +22,18 @@ type debugWriters struct {
 
 type overlapDetectingWriter struct {
 	active     atomic.Int32
+	writes     atomic.Int32
 	overlapped atomic.Bool
 }
 
-func (w *overlapDetectingWriter) Write(p []byte) (int, error) {
+func (w *overlapDetectingWriter) Write(data []byte) (int, error) {
+	w.writes.Add(1)
 	if w.active.Add(1) > 1 {
 		w.overlapped.Store(true)
 	}
 	time.Sleep(time.Millisecond)
 	w.active.Add(-1)
-	return len(p), nil
+	return len(data), nil
 }
 
 // saveDebugState saves the current debug state for restoration.
@@ -193,12 +195,14 @@ func TestSetDebugWriter(t *testing.T) {
 	assert.Equal(t, beforeDisable, externalBuf.String())
 	assert.Contains(t, sessionBuf.String(), "DEBUG: session only")
 
+	const concurrentCallers = 20
+
 	sessionLogWriter = nil
 	detector := &overlapDetectingWriter{}
 	SetDebugWriter(detector)
 	start := make(chan struct{})
 	var writers sync.WaitGroup
-	for i := range 20 {
+	for i := range concurrentCallers {
 		writers.Add(1)
 		go func() {
 			defer writers.Done()
@@ -212,6 +216,10 @@ func TestSetDebugWriter(t *testing.T) {
 	}
 	close(start)
 	writers.Wait()
+	// Without this the overlap assertion below would also pass if every message
+	// were dropped, since dropped writes cannot overlap.
+	assert.Equal(t, int32(concurrentCallers), detector.writes.Load(),
+		"every debug call must reach the external writer exactly once")
 	assert.False(t, detector.overlapped.Load(), "external debug writes must be serialized")
 }
 
