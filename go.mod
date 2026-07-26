@@ -5,7 +5,7 @@ go 1.25.8
 require (
 	github.com/sasha-s/go-deadlock v0.3.9
 	github.com/stretchr/testify v1.11.1
-	go.bug.st/serial v1.7.1
+	go.bug.st/serial v1.8.0
 	golang.org/x/sys v0.47.0
 	periph.io/x/conn/v3 v3.7.3
 	periph.io/x/host/v3 v3.8.5
