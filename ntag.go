@@ -907,13 +907,8 @@ func (t *NTAGTag) FastRead(ctx context.Context, startAddr, endAddr uint8) ([]byt
 
 	// Use SendRawCommand for FastRead as some PN532 chips require it
 	// (SendDataExchange returns error 0x81 on some PN532 variants)
-	var data []byte
-	var err error
-	if t.requiresRawType2Commands() {
-		data, err = t.sendRawType2Command(ctx, cmd)
-	} else {
-		data, err = t.device.SendRawCommand(ctx, cmd)
-
+	data, usedRaw, err := t.sendType2Command(ctx, cmd, t.device.SendRawCommand)
+	if !usedRaw {
 		// Re-select target after SendRawCommand to restore PN532 internal state.
 		// SendRawCommand uses InCommunicateThru (0x42) which is a raw pass-through command
 		// that doesn't maintain the PN532's target selection state. Without re-selection,
@@ -958,19 +953,13 @@ func (t *NTAGTag) PwdAuth(ctx context.Context, password []byte) ([]byte, error) 
 	cmd[0] = ntagCmdPwdAuth
 	copy(cmd[1:], password)
 
-	var data []byte
-	var err error
-	if t.requiresRawType2Commands() {
-		data, err = t.sendRawType2Command(ctx, cmd)
-	} else {
-		data, err = t.device.SendDataExchange(ctx, cmd)
-	}
+	data, usedRaw, err := t.sendType2Command(ctx, cmd, t.device.SendDataExchange)
 	if err != nil {
 		return nil, fmt.Errorf("PWD_AUTH failed: %w", err)
 	}
 
 	// Response should be 2-byte PACK
-	if len(data) < 2 || (!t.requiresRawType2Commands() && len(data) != 2) {
+	if len(data) < 2 || (!usedRaw && len(data) != 2) {
 		return nil, fmt.Errorf("invalid PACK response length: expected at least 2 bytes, got %d", len(data))
 	}
 
@@ -988,13 +977,7 @@ func (t *NTAGTag) GetVersion(ctx context.Context) (*NTAGVersion, error) {
 	// This follows the same pattern as FastRead for better hardware compatibility
 	cmd := []byte{ntagCmdGetVersion}
 
-	var data []byte
-	var err error
-	if t.requiresRawType2Commands() {
-		data, err = t.sendRawType2Command(ctx, cmd)
-	} else {
-		data, err = t.device.SendRawCommand(ctx, cmd)
-	}
+	data, _, err := t.sendType2Command(ctx, cmd, t.device.SendRawCommand)
 	if err != nil {
 		// If GET_VERSION fails (common with clone devices), fall back to default detection
 		// This maintains backward compatibility while enabling proper detection when possible

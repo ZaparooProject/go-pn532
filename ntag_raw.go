@@ -60,6 +60,22 @@ func (t *NTAGTag) sendRawType2Command(ctx context.Context, command []byte) ([]by
 	return t.device.SendRawCommand(ctx, appendCRCA(command))
 }
 
+// sendType2Command selects the raw Type 2 path when required and otherwise uses
+// standardSend. The returned flag reports whether the raw path was selected.
+func (t *NTAGTag) sendType2Command(
+	ctx context.Context,
+	command []byte,
+	standardSend func(context.Context, []byte) ([]byte, error),
+) ([]byte, bool, error) {
+	if t.requiresRawType2Commands() {
+		data, err := t.sendRawType2Command(ctx, command)
+		return data, true, err
+	}
+
+	data, err := standardSend(ctx, command)
+	return data, false, err
+}
+
 // readRawType2Pages reads Type 2 data and removes any bytes beyond the requested
 // payload, including an optional response CRC.
 func (t *NTAGTag) readRawType2Pages(ctx context.Context, startPage uint8, expectedBytes int) ([]byte, error) {
