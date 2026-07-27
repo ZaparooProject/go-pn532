@@ -35,7 +35,9 @@ const (
 	profilePN532Killer
 )
 
-var getDetailedPortsList = enumerator.GetDetailedPortsList
+var getDetailedPortsList = func() ([]*enumerator.PortDetails, error) {
+	return enumerator.GetDetailedPortsList()
+}
 
 func resolveDeviceProfile(portName string) deviceProfile {
 	ports, err := getDetailedPortsList()
