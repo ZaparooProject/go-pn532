@@ -5,6 +5,7 @@ package pn532
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -79,6 +80,71 @@ func TestNTAGTagRawType2ReadBlock(t *testing.T) {
 	assert.Equal(t, [][]byte{{ntagCmdRead, 0x04, 0x26, 0xEE}}, transport.commandData(cmdInCommunicateThru))
 	assert.Zero(t, transport.GetCallCount(cmdInDataExchange))
 	assert.Zero(t, transport.GetCallCount(cmdInSelect))
+}
+
+func TestNTAGTagRawType2ReadBlockRetries(t *testing.T) {
+	t.Parallel()
+
+	success := []byte{0x43, 0x00}
+	success = append(success, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08)
+	success = append(success, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10)
+	short := []byte{0x43, 0x00, 0x01, 0x02}
+
+	tests := []struct {
+		name            string
+		responses       [][]byte
+		wantData        []byte
+		wantCalls       int
+		wantError       bool
+		wantReadFailure bool
+	}{
+		{
+			name:      "short response recovers",
+			responses: [][]byte{short, success},
+			wantData:  []byte{0x01, 0x02, 0x03, 0x04},
+			wantCalls: 2,
+		},
+		{
+			name:      "transient RF error recovers",
+			responses: [][]byte{{0x43, 0x02}, success},
+			wantData:  []byte{0x01, 0x02, 0x03, 0x04},
+			wantCalls: 2,
+		},
+		{
+			name:            "short response exhausts retries",
+			responses:       [][]byte{short, short, short},
+			wantCalls:       NTAGBlockReadRetries,
+			wantError:       true,
+			wantReadFailure: true,
+		},
+		{
+			name:      "permanent error is not retried",
+			responses: [][]byte{{0x43, 0x14}},
+			wantCalls: 1,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			device, transport := newRawType2Device(t)
+			transport.QueueResponses(cmdInCommunicateThru, tt.responses...)
+			tag := NewNTAGTag(device, []byte{0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, 0)
+
+			data, err := tag.readBlockWithRetry(context.Background(), 4)
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantReadFailure, errors.Is(err, ErrTagReadFailed))
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantData, data)
+			}
+			assert.Len(t, transport.commandData(cmdInCommunicateThru), tt.wantCalls)
+			assert.Zero(t, transport.GetCallCount(cmdInDataExchange))
+		})
+	}
 }
 
 func TestNTAGTagRawType2WriteResponses(t *testing.T) {

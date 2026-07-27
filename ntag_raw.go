@@ -22,6 +22,10 @@ import (
 	"fmt"
 )
 
+// errRawType2ShortResponse identifies a raw Type 2 response that did not
+// contain the requested payload.
+var errRawType2ShortResponse = errors.New("raw Type 2 response too short")
+
 // requiresRawType2Commands reports whether the transport requires Type 2
 // commands to include CRC-A and use InCommunicateThru.
 func (t *NTAGTag) requiresRawType2Commands() bool {
@@ -64,9 +68,16 @@ func (t *NTAGTag) readRawType2Pages(ctx context.Context, startPage uint8, expect
 		return nil, err
 	}
 	if len(data) < expectedBytes {
-		return nil, fmt.Errorf("invalid raw READ response length %d (expected at least %d)", len(data), expectedBytes)
+		return nil, fmt.Errorf("%w: invalid raw READ response length %d (expected at least %d)",
+			errRawType2ShortResponse, len(data), expectedBytes)
 	}
 	return data[:expectedBytes], nil
+}
+
+// isRetryableRawType2ReadError reports whether a raw Type 2 read failed because
+// of a short response or a transient RF error.
+func isRetryableRawType2ReadError(err error) bool {
+	return errors.Is(err, errRawType2ShortResponse) || isRetryableRFError(err)
 }
 
 // isRawType2WriteFramingError reports whether err is the framing status observed
