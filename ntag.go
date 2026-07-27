@@ -1425,6 +1425,8 @@ func (t *NTAGTag) getTagTypeName() string {
 	}
 }
 
+// readBlockWithRetry reads a page through the transport-specific command path
+// and retries standard PN532 exchanges when necessary.
 func (t *NTAGTag) readBlockWithRetry(ctx context.Context, block uint8) ([]byte, error) {
 	if t.requiresRawType2Commands() {
 		return t.readRawType2Pages(ctx, block, ntagBlockSize)

@@ -22,10 +22,13 @@ import (
 	"fmt"
 )
 
+// requiresRawType2Commands reports whether the transport requires Type 2
+// commands to include CRC-A and use InCommunicateThru.
 func (t *NTAGTag) requiresRawType2Commands() bool {
 	return t.device.hasCapability(CapabilityRequiresRawType2Commands)
 }
 
+// calculateCRCA calculates the ISO/IEC 14443-A CRC and returns it in wire order.
 func calculateCRCA(data []byte) [2]byte {
 	crc := uint16(0x6363)
 	for _, value := range data {
@@ -36,6 +39,7 @@ func calculateCRCA(data []byte) [2]byte {
 	return [2]byte{byte(crc), byte(crc >> 8)}
 }
 
+// appendCRCA returns a copy of data with its CRC-A bytes appended.
 func appendCRCA(data []byte) []byte {
 	command := make([]byte, len(data), len(data)+2)
 	copy(command, data)
@@ -43,6 +47,8 @@ func appendCRCA(data []byte) []byte {
 	return append(command, crc[0], crc[1])
 }
 
+// sendRawType2Command appends CRC-A and sends a Type 2 command through the
+// transport's raw command path.
 func (t *NTAGTag) sendRawType2Command(ctx context.Context, command []byte) ([]byte, error) {
 	// Raw Type 2 transports preserve the active target themselves. Some acknowledge
 	// InSelect without ever returning its response, which stalls and disrupts the
@@ -50,6 +56,8 @@ func (t *NTAGTag) sendRawType2Command(ctx context.Context, command []byte) ([]by
 	return t.device.SendRawCommand(ctx, appendCRCA(command))
 }
 
+// readRawType2Pages reads Type 2 data and removes any bytes beyond the requested
+// payload, including an optional response CRC.
 func (t *NTAGTag) readRawType2Pages(ctx context.Context, startPage uint8, expectedBytes int) ([]byte, error) {
 	data, err := t.sendRawType2Command(ctx, []byte{ntagCmdRead, startPage})
 	if err != nil {
@@ -61,12 +69,16 @@ func (t *NTAGTag) readRawType2Pages(ctx context.Context, startPage uint8, expect
 	return data[:expectedBytes], nil
 }
 
+// isRawType2WriteFramingError reports whether err is the framing status observed
+// when a raw transport receives the four-bit Type 2 write acknowledgment.
 func isRawType2WriteFramingError(err error) bool {
 	var pn532Err *PN532Error
 	return errors.As(err, &pn532Err) &&
 		pn532Err.Command == "InCommunicateThru" && pn532Err.ErrorCode == 0x05
 }
 
+// verifyRawType2WriteAfterFramingError confirms an ambiguous raw write by reading
+// the page back and requiring an exact data match.
 func (t *NTAGTag) verifyRawType2WriteAfterFramingError(
 	ctx context.Context, block uint8, expected []byte, writeErr error,
 ) error {

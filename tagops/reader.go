@@ -153,6 +153,8 @@ func (t *TagOperations) readPageChunk(
 	return t.readPagesIndividually(ctx, currentPage, chunkEnd)
 }
 
+// tryFastRead reads a page range with the NTAG fast-read command and returns
+// the next page when the command succeeds.
 func (t *TagOperations) tryFastRead(ctx context.Context, currentPage, chunkEnd byte) (data []byte, nextPage byte) {
 	if chunkEnd <= currentPage {
 		return nil, 0
@@ -167,6 +169,7 @@ func (t *TagOperations) tryFastRead(ctx context.Context, currentPage, chunkEnd b
 	return nil, 0
 }
 
+// readPagesIndividually reads a page range with standard NTAG read commands.
 func (t *TagOperations) readPagesIndividually(
 	ctx context.Context, currentPage, chunkEnd byte,
 ) (result []byte, nextPage byte, err error) {

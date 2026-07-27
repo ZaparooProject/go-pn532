@@ -121,6 +121,7 @@ func New(portName string) (*Transport, error) {
 	}, nil
 }
 
+// serialMode builds the UART mode for the selected device profile.
 func serialMode(profile deviceProfile) *serial.Mode {
 	mode := &serial.Mode{
 		BaudRate: 115200,
@@ -134,6 +135,7 @@ func serialMode(profile deviceProfile) *serial.Mode {
 	return mode
 }
 
+// openPort opens a serial device and applies the shared UART read timeout.
 func openPort(portName string, profile deviceProfile) (serial.Port, time.Duration, error) {
 	port, err := openSerialPort(portName, serialMode(profile))
 	if err != nil {

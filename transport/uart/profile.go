@@ -28,17 +28,24 @@ const (
 	pn532KillerProduct = "PN532Killer-UART"
 )
 
+// deviceProfile identifies transport behavior selected from serial device metadata.
 type deviceProfile uint8
 
 const (
+	// profileGeneric preserves standard PN532 UART behavior.
 	profileGeneric deviceProfile = iota
+	// profilePN532Killer enables behavior required by compatible PN532Killer firmware.
 	profilePN532Killer
 )
 
+// getDetailedPortsList provides a stable test seam across supported serial
+// dependency versions.
 var getDetailedPortsList = func() ([]*enumerator.PortDetails, error) {
 	return enumerator.GetDetailedPortsList()
 }
 
+// resolveDeviceProfile selects a device profile only when the port's strict USB
+// identity matches a supported profile.
 func resolveDeviceProfile(portName string) deviceProfile {
 	ports, err := getDetailedPortsList()
 	if err != nil {
@@ -60,6 +67,8 @@ func resolveDeviceProfile(portName string) deviceProfile {
 	return profileGeneric
 }
 
+// canonicalPortName resolves serial device symlinks when possible and cleans the
+// resulting path for comparison.
 func canonicalPortName(portName string) string {
 	resolved, err := filepath.EvalSymlinks(portName)
 	if err == nil {
