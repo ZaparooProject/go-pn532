@@ -46,8 +46,9 @@ const (
 )
 
 var (
-	ackFrame  = []byte{0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00}
-	nackFrame = []byte{0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00}
+	ackFrame       = []byte{0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00}
+	nackFrame      = []byte{0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00}
+	openSerialPort = serial.Open
 )
 
 // Transport implements the pn532.Transport interface for UART communication.
@@ -61,6 +62,7 @@ type Transport struct {
 	lastCommand           byte
 	connectionEstablished bool
 	disconnected          bool // Set when device-gone is detected during I/O
+	profile               deviceProfile
 }
 
 // isWindows returns true if running on Windows
@@ -105,14 +107,39 @@ func windowsPostWriteDelay() {
 
 // New creates a new UART transport.
 func New(portName string) (*Transport, error) {
-	port, err := serial.Open(portName, &serial.Mode{
+	profile := resolveDeviceProfile(portName)
+	port, timeout, err := openPort(portName, profile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open UART port %s: %w", portName, err)
+	}
+
+	return &Transport{
+		port:           port,
+		portName:       portName,
+		currentTimeout: timeout, // Initialize with default read timeout
+		profile:        profile,
+	}, nil
+}
+
+// serialMode builds the UART mode for the selected device profile.
+func serialMode(profile deviceProfile) *serial.Mode {
+	mode := &serial.Mode{
 		BaudRate: 115200,
 		DataBits: 8,
 		Parity:   serial.NoParity,
 		StopBits: serial.OneStopBit,
-	})
+	}
+	if profile == profilePN532Killer {
+		mode.InitialStatusBits = &serial.ModemOutputBits{DTR: false, RTS: false}
+	}
+	return mode
+}
+
+// openPort opens a serial device and applies the shared UART read timeout.
+func openPort(portName string, profile deviceProfile) (serial.Port, time.Duration, error) {
+	port, err := openSerialPort(portName, serialMode(profile))
 	if err != nil {
-		return nil, fmt.Errorf("failed to open UART port %s: %w", portName, err)
+		return nil, 0, err
 	}
 
 	// Set unified read timeout - originally 50ms on Linux/Mac and 100ms on Windows,
@@ -120,14 +147,9 @@ func New(portName string) (*Transport, error) {
 	timeout := getReadTimeout()
 	if err := port.SetReadTimeout(timeout); err != nil {
 		_ = port.Close()
-		return nil, fmt.Errorf("failed to set UART read timeout: %w", err)
+		return nil, 0, fmt.Errorf("failed to set UART read timeout: %w", err)
 	}
-
-	return &Transport{
-		port:           port,
-		portName:       portName,
-		currentTimeout: timeout, // Initialize with default read timeout
-	}, nil
+	return port, timeout, nil
 }
 
 // sleepCtx performs a context-aware sleep. Returns ctx.Err() if context is cancelled.
@@ -185,8 +207,10 @@ func (t *Transport) handleNormalResponse(ctx context.Context, ackData []byte) ([
 		return nil, t.currentTrace.WrapError(err)
 	}
 
-	if err := t.sendAck(ctx); err != nil {
-		return nil, t.currentTrace.WrapError(err)
+	if t.profile != profilePN532Killer {
+		if err := t.sendAck(ctx); err != nil {
+			return nil, t.currentTrace.WrapError(err)
+		}
 	}
 
 	t.connectionEstablished = true
@@ -355,21 +379,9 @@ func (t *Transport) Reconnect() error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Reopen with same settings
-	port, err := serial.Open(t.portName, &serial.Mode{
-		BaudRate: 115200,
-		DataBits: 8,
-		Parity:   serial.NoParity,
-		StopBits: serial.OneStopBit,
-	})
+	port, timeout, err := openPort(t.portName, t.profile)
 	if err != nil {
 		return fmt.Errorf("reconnect failed: %w", err)
-	}
-
-	// Set read timeout
-	timeout := getReadTimeout()
-	if err := port.SetReadTimeout(timeout); err != nil {
-		_ = port.Close()
-		return fmt.Errorf("reconnect set timeout failed: %w", err)
 	}
 
 	t.port = port
@@ -1235,7 +1247,7 @@ func (t *Transport) receiveSpecialDiagnoseByte(ctx context.Context, _ byte) ([]b
 
 // HasCapability implements the TransportCapabilityChecker interface
 // UART transport supports native InAutoPoll for reduced CPU usage
-func (*Transport) HasCapability(capability pn532.TransportCapability) bool {
+func (t *Transport) HasCapability(capability pn532.TransportCapability) bool {
 	switch capability {
 	case pn532.CapabilityAutoPollNative:
 		// UART supports native InAutoPoll command
@@ -1246,6 +1258,8 @@ func (*Transport) HasCapability(capability pn532.TransportCapability) bool {
 	case pn532.CapabilityUART:
 		// This is the UART transport
 		return true
+	case pn532.CapabilityRequiresRawType2Commands:
+		return t.profile == profilePN532Killer
 	default:
 		return false
 	}

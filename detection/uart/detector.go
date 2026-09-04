@@ -274,6 +274,7 @@ func isLikelyPN532(port *serialPort) bool {
 		"0403:6001", // FTDI FT232 (common in PN532 boards)
 		"10C4:EA60", // Silicon Labs CP210x (common in PN532 boards)
 		"1A86:7523", // QinHeng CH340 (common in PN532 boards)
+		"1A86:55D3", // PN532Killer CH343 USB UART
 	}
 
 	upperVIDPID := strings.ToUpper(port.VIDPID)

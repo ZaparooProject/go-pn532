@@ -71,6 +71,10 @@ const (
 	// CapabilityUART indicates the transport uses UART communication
 	// UART transport is prone to PN532 firmware lockups with large InCommunicateThru payloads
 	CapabilityUART TransportCapability = "uart"
+
+	// CapabilityRequiresRawType2Commands indicates NFC Forum Type 2 commands
+	// must use InCommunicateThru with a software-generated CRC-A.
+	CapabilityRequiresRawType2Commands TransportCapability = "requires_raw_type2_commands"
 )
 
 // TransportCapabilityChecker defines an interface for querying transport capabilities

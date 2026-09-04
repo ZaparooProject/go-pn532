@@ -107,10 +107,7 @@ func (t *TagOperations) writeNTAGBlocks(ctx context.Context, startBlock byte, da
 		}
 		copy(pageData, data[dataStart:dataEnd])
 
-		// Write command: 0xA2 page data[4]
-		cmd := append([]byte{0xA2, page}, pageData...)
-		_, err := t.device.SendDataExchange(ctx, cmd)
-		if err != nil {
+		if err := t.ntagInstance.WriteBlock(ctx, page, pageData); err != nil {
 			return fmt.Errorf("failed to write page %d: %w", page, err)
 		}
 	}

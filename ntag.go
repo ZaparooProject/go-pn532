@@ -175,6 +175,13 @@ func (t *NTAGTag) ReadBlock(ctx context.Context, block uint8) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if t.requiresRawType2Commands() {
+		data, err := t.readRawType2Pages(ctx, block, ntagBlockSize)
+		if err != nil {
+			return nil, fmt.Errorf("%w (block %d): %w", ErrTagReadFailed, block, err)
+		}
+		return data, nil
+	}
 
 	data, err := t.device.SendDataExchangeWithRetry(ctx, []byte{ntagCmdRead, block})
 	if err != nil {
@@ -216,6 +223,24 @@ func (t *NTAGTag) WriteBlock(ctx context.Context, block uint8, data []byte) erro
 	cmd := make([]byte, 0, 2+len(data))
 	cmd = append(cmd, ntagCmdWrite, block)
 	cmd = append(cmd, data...)
+	if t.requiresRawType2Commands() {
+		response, err := t.sendRawType2Command(ctx, cmd)
+		if err != nil {
+			// Some raw transports surface the tag's four-bit write ACK as PN532
+			// framing status 0x05. Treat it as ambiguous and require exact readback.
+			if isRawType2WriteFramingError(err) {
+				return t.verifyRawType2WriteAfterFramingError(ctx, block, data, err)
+			}
+			return fmt.Errorf("%w (block %d): %w", ErrTagWriteFailed, block, err)
+		}
+		if len(response) == 0 {
+			return fmt.Errorf("%w (block %d): missing Type 2 ACK", ErrTagWriteFailed, block)
+		}
+		if response[0]&0x0F != 0x0A {
+			return fmt.Errorf("%w (block %d): Type 2 NAK 0x%02X", ErrTagWriteFailed, block, response[0])
+		}
+		return nil
+	}
 
 	_, err := t.device.SendDataExchangeWithRetry(ctx, cmd)
 	if err != nil {
@@ -265,11 +290,12 @@ func (t *NTAGTag) ReadNDEF(ctx context.Context) (*NDEFMessage, error) {
 		return &NDEFMessage{}, nil
 	}
 
-	// Ensure target is selected before reading. This is defensive against any prior
-	// operations that may have used InCommunicateThru (0x42), which doesn't maintain
-	// the PN532's target selection state. See PN532 User Manual §7.3.9.
-	if err := t.device.InSelect(ctx); err != nil {
-		Debugln("NTAG ReadNDEF: InSelect failed, continuing anyway:", err)
+	// Ensure target is selected before reading on standard transports. Raw Type 2
+	// transports preserve selection themselves and may not return an InSelect response.
+	if !t.requiresRawType2Commands() {
+		if err := t.device.InSelect(ctx); err != nil {
+			Debugln("NTAG ReadNDEF: InSelect failed, continuing anyway:", err)
+		}
 	}
 
 	header, err := t.readNDEFHeader(ctx)
@@ -298,6 +324,11 @@ func (t *NTAGTag) ReadNDEF(ctx context.Context) (*NDEFMessage, error) {
 	// NXP genuine tags have UID prefix 0x04.
 	if len(t.uid) > 0 && t.uid[0] != 0x04 {
 		Debugf("NTAG ReadNDEF: non-NXP UID prefix 0x%02X, skipping FAST_READ for clone compatibility", t.uid[0])
+		return t.readNDEFBlockByBlock(ctx)
+	}
+	// Raw Type 2 transports can reject FAST_READ with a card framing error even
+	// while standard READ works. Prefer the universally supported command for NDEF.
+	if t.requiresRawType2Commands() {
 		return t.readNDEFBlockByBlock(ctx)
 	}
 
@@ -397,6 +428,10 @@ func (t *NTAGTag) readRawPages(ctx context.Context, startPage uint8, pageCount i
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	expectedBytes := pageCount * ntagBlockSize
+	if t.requiresRawType2Commands() {
+		return t.readRawType2Pages(ctx, startPage, expectedBytes)
+	}
 
 	// NTAG READ command returns 16 bytes (4 pages) starting from the specified page
 	data, err := t.device.SendDataExchangeWithRetry(ctx, []byte{ntagCmdRead, startPage})
@@ -405,7 +440,6 @@ func (t *NTAGTag) readRawPages(ctx context.Context, startPage uint8, pageCount i
 	}
 
 	// The response should be 16 bytes (4 pages)
-	expectedBytes := pageCount * ntagBlockSize
 	if len(data) < expectedBytes {
 		// Return what we got
 		return data, nil
@@ -873,17 +907,18 @@ func (t *NTAGTag) FastRead(ctx context.Context, startAddr, endAddr uint8) ([]byt
 
 	// Use SendRawCommand for FastRead as some PN532 chips require it
 	// (SendDataExchange returns error 0x81 on some PN532 variants)
-	data, err := t.device.SendRawCommand(ctx, cmd)
-
-	// Re-select target after SendRawCommand to restore PN532 internal state.
-	// SendRawCommand uses InCommunicateThru (0x42) which is a raw pass-through command
-	// that doesn't maintain the PN532's target selection state. Without re-selection,
-	// subsequent InDataExchange calls may fail with timeout error 01.
-	// See PN532 User Manual §7.3.9: "The host controller has to take care of the
-	// selection of the target it wants to reach (whereas when using the
-	// InDataExchange command, it is done automatically)."
-	if selectErr := t.device.InSelect(ctx); selectErr != nil {
-		Debugln("NTAG FastRead: InSelect after raw command failed:", selectErr)
+	data, usedRaw, err := t.sendType2Command(ctx, cmd, t.device.SendRawCommand)
+	if !usedRaw {
+		// Re-select target after SendRawCommand to restore PN532 internal state.
+		// SendRawCommand uses InCommunicateThru (0x42) which is a raw pass-through command
+		// that doesn't maintain the PN532's target selection state. Without re-selection,
+		// subsequent InDataExchange calls may fail with timeout error 01.
+		// See PN532 User Manual §7.3.9: "The host controller has to take care of the
+		// selection of the target it wants to reach (whereas when using the
+		// InDataExchange command, it is done automatically)."
+		if selectErr := t.device.InSelect(ctx); selectErr != nil {
+			Debugln("NTAG FastRead: InSelect after raw command failed:", selectErr)
+		}
 	}
 
 	if err != nil {
@@ -918,17 +953,17 @@ func (t *NTAGTag) PwdAuth(ctx context.Context, password []byte) ([]byte, error) 
 	cmd[0] = ntagCmdPwdAuth
 	copy(cmd[1:], password)
 
-	data, err := t.device.SendDataExchange(ctx, cmd)
+	data, usedRaw, err := t.sendType2Command(ctx, cmd, t.device.SendDataExchange)
 	if err != nil {
 		return nil, fmt.Errorf("PWD_AUTH failed: %w", err)
 	}
 
 	// Response should be 2-byte PACK
-	if len(data) != 2 {
-		return nil, fmt.Errorf("invalid PACK response length: expected 2 bytes, got %d", len(data))
+	if len(data) < 2 || (!usedRaw && len(data) != 2) {
+		return nil, fmt.Errorf("invalid PACK response length: expected at least 2 bytes, got %d", len(data))
 	}
 
-	return data, nil
+	return data[:2], nil
 }
 
 // GetVersion retrieves version information from the NTAG tag using proper GET_VERSION command
@@ -942,7 +977,7 @@ func (t *NTAGTag) GetVersion(ctx context.Context) (*NTAGVersion, error) {
 	// This follows the same pattern as FastRead for better hardware compatibility
 	cmd := []byte{ntagCmdGetVersion}
 
-	data, err := t.device.SendRawCommand(ctx, cmd)
+	data, _, err := t.sendType2Command(ctx, cmd, t.device.SendRawCommand)
 	if err != nil {
 		// If GET_VERSION fails (common with clone devices), fall back to default detection
 		// This maintains backward compatibility while enabling proper detection when possible
@@ -1300,10 +1335,18 @@ func (t *NTAGTag) canAccessPage(ctx context.Context, page uint8) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	data, err := t.device.SendDataExchange(ctx, []byte{ntagCmdRead, page})
+	var data []byte
+	var err error
+	if t.requiresRawType2Commands() {
+		data, err = t.readRawType2Pages(ctx, page, ntagBlockSize)
+	} else {
+		data, err = t.device.SendDataExchange(ctx, []byte{ntagCmdRead, page})
+	}
 	if err != nil {
-		// Re-select target to recover from NAK/timeout errors
-		_ = t.device.InSelect(ctx)
+		// Re-select standard transports to recover from NAK/timeout errors.
+		if !t.requiresRawType2Commands() {
+			_ = t.device.InSelect(ctx)
+		}
 		return false
 	}
 	return len(data) >= 4
@@ -1365,7 +1408,29 @@ func (t *NTAGTag) getTagTypeName() string {
 	}
 }
 
+// readBlockWithRetry reads a page through the transport-specific command path
+// and retries short responses or transient RF errors when necessary.
 func (t *NTAGTag) readBlockWithRetry(ctx context.Context, block uint8) ([]byte, error) {
+	if t.requiresRawType2Commands() {
+		var lastErr error
+		for range NTAGBlockReadRetries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			data, err := t.readRawType2Pages(ctx, block, ntagBlockSize)
+			if err == nil {
+				return data, nil
+			}
+			if !isRetryableRawType2ReadError(err) {
+				return nil, err
+			}
+			lastErr = err
+		}
+
+		return nil, fmt.Errorf("%w (block %d after %d retries): %w",
+			ErrTagReadFailed, block, NTAGBlockReadRetries, lastErr)
+	}
 	for i := range NTAGBlockReadRetries {
 		if err := ctx.Err(); err != nil {
 			return nil, err

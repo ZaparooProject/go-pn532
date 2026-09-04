@@ -89,3 +89,21 @@ func TestProcessPort_SafeMode_FailedProbeDiscardsUnknownDevice(t *testing.T) {
 	_, included := det.processPort(context.Background(), port, opts)
 	assert.False(t, included, "Safe mode must discard unknown device when probe fails")
 }
+
+func TestPN532KillerIsLikelyAndRetainsMetadata(t *testing.T) {
+	port := &serialPort{
+		Path:         "/dev/ttyACM0",
+		Name:         "ttyACM0",
+		VIDPID:       "1A86:55D3",
+		Manufacturer: "wch.cn",
+		Product:      "PN532Killer-UART",
+		SerialNumber: "00000001",
+	}
+
+	assert.True(t, isLikelyPN532(port))
+
+	device := (&detector{}).createDeviceInfo(port, detection.Medium)
+	assert.Equal(t, "1A86:55D3", device.Metadata["vidpid"])
+	assert.Equal(t, "PN532Killer-UART", device.Metadata["product"])
+	assert.Equal(t, "00000001", device.Metadata["serial"])
+}
