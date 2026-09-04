@@ -15,7 +15,7 @@ func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
 	// First try to get USB serial devices with full metadata
-	usbPorts, err := processUSBDevice(ctx, "/sys/bus/usb/devices")
+	usbPorts, err := processUSBDevice(ctx, sysfsClassTTY)
 	if err == nil {
 		ports = append(ports, usbPorts...)
 	}
@@ -36,10 +36,9 @@ func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 
 // getSerialPortsFallback returns serial ports without metadata
 // processUSBDevice checks if a tty entry is a USB device and returns its port info
-func processUSBDevice(_ context.Context, _ string) ([]serialPort, error) {
+func processUSBDevice(_ context.Context, ttyDir string) ([]serialPort, error) {
 	var ports []serialPort
 
-	ttyDir := "/sys/class/tty"
 	entries, err := os.ReadDir(ttyDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory %s: %w", ttyDir, err)
@@ -54,17 +53,39 @@ func processUSBDevice(_ context.Context, _ string) ([]serialPort, error) {
 	return ports, nil
 }
 
-// classLinkNames reports whether the tty's class symlink target names a USB
+// sysfsClassTTY is where the tty class lives, and sysfsRoot bounds the paths the
+// USB attribute readers are willing to open. Both are variables so tests can
+// point the walk at a fixture tree; nothing outside tests reassigns them.
+var (
+	sysfsClassTTY = "/sys/class/tty"
+	sysfsRoot     = "/sys"
+)
+
+// underSysfsRoot reports whether a path is inside sysfsRoot. The attribute
+// readers open files by a path derived from a symlink target, so this bounds
+// what a malformed or hostile link can reach.
+func underSysfsRoot(path string) bool {
+	return strings.HasPrefix(filepath.Clean(path), sysfsRoot+string(filepath.Separator))
+}
+
+// readLink is os.Readlink, indirected so a test can make the class-link check
+// unanswerable and prove the slow path still finds the device.
+var readLink = os.Readlink
+
+// classLinkIsUSB reports whether the tty's class symlink target names a USB
 // device, and whether the question could be answered at all.
 //
 // /sys/class/tty/<name> is itself a symlink to the device directory, so one
 // readlink answers the USB question without resolving anything. That directory
 // is a descendant of whatever <name>/device resolves to, so it contains every
 // path component the slower check sees: this can skip work, never turn a USB
-// device into a non-USB one. When the entry is not a symlink at all (a kernel
-// built with CONFIG_SYSFS_DEPRECATED) the caller falls back to the slow path.
+// device into a non-USB one.
+//
+// A readlink that fails is reported as unanswered rather than as "not USB", so
+// the caller falls through to resolving <name>/device. Treating "do not know"
+// as a rejection is the one way this optimisation could lose a real device.
 func classLinkIsUSB(ttyPath string) (isUSB, known bool) {
-	target, err := os.Readlink(ttyPath)
+	target, err := readLink(ttyPath)
 	if err != nil {
 		return false, false
 	}
@@ -131,21 +152,19 @@ func readUSBAttributes(port *serialPort, devicePath string) {
 
 // readUSBIdentifiers reads vendor/product IDs and descriptors from USB device
 func readUSBIdentifiers(port *serialPort, path string) bool {
-	// Validate path is under /sys/
-	cleanPath := filepath.Clean(path)
-	if !strings.HasPrefix(cleanPath, "/sys/") {
+	if !underSysfsRoot(path) {
 		return false
 	}
 
 	vidPath := filepath.Clean(filepath.Join(path, "idVendor"))
 	pidPath := filepath.Clean(filepath.Join(path, "idProduct"))
 
-	vidBytes, vidErr := os.ReadFile(vidPath) // #nosec G304 -- Path is validated to be under /sys/
+	vidBytes, vidErr := os.ReadFile(vidPath) // #nosec G304 -- Path is validated to be under sysfsRoot
 	if vidErr != nil {
 		return false
 	}
 
-	pidBytes, pidErr := os.ReadFile(pidPath) // #nosec G304 -- Path is validated to be under /sys/
+	pidBytes, pidErr := os.ReadFile(pidPath) // #nosec G304 -- Path is validated to be under sysfsRoot
 	if pidErr != nil {
 		return false
 	}
@@ -161,21 +180,19 @@ func readUSBIdentifiers(port *serialPort, path string) bool {
 
 // readUSBDescriptors reads manufacturer, product, and serial number
 func readUSBDescriptors(port *serialPort, path string) {
-	// Validate path is under /sys/
-	cleanPath := filepath.Clean(path)
-	if !strings.HasPrefix(cleanPath, "/sys/") {
+	if !underSysfsRoot(path) {
 		return
 	}
 
-	// #nosec G304 -- Path is validated to be under /sys/
+	// #nosec G304 -- Path is validated to be under sysfsRoot
 	if mfgBytes, err := os.ReadFile(filepath.Clean(filepath.Join(path, "manufacturer"))); err == nil {
 		port.Manufacturer = strings.TrimSpace(string(mfgBytes))
 	}
-	// #nosec G304 -- Path is validated to be under /sys/
+	// #nosec G304 -- Path is validated to be under sysfsRoot
 	if prodBytes, err := os.ReadFile(filepath.Clean(filepath.Join(path, "product"))); err == nil {
 		port.Product = strings.TrimSpace(string(prodBytes))
 	}
-	// #nosec G304 -- Path is validated to be under /sys/
+	// #nosec G304 -- Path is validated to be under sysfsRoot
 	if serialBytes, err := os.ReadFile(filepath.Clean(filepath.Join(path, "serial"))); err == nil {
 		port.SerialNumber = strings.TrimSpace(string(serialBytes))
 	}

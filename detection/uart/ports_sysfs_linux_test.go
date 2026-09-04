@@ -18,6 +18,7 @@
 package uart
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,4 +121,227 @@ func BenchmarkProcessUSBDevice(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// fakeSysfs builds a sysfs-shaped fixture tree and points the enumerator at it.
+// The USB branch carries a "usb1" component because processUSBDeviceEntry
+// decides a device is USB by looking for "/usb" in the resolved device path.
+//
+// Layout, mirroring how the kernel lays out a CH340 on a USB port:
+//
+//	<root>/class/tty/ttyUSB0 -> ../../devices/usb1/1-2/1-2:1.0/ttyUSB0
+//	<root>/class/tty/ttyS0   -> ../../devices/platform/serial8250/tty/ttyS0
+//	<root>/devices/usb1/1-2/{idVendor,idProduct,manufacturer,product,serial}
+//	<root>/devices/usb1/1-2/1-2:1.0/ttyUSB0/device -> ..
+func fakeSysfs(t *testing.T) (root, ttyDir string) {
+	t.Helper()
+
+	root = t.TempDir()
+
+	origRoot, origClass := sysfsRoot, sysfsClassTTY
+	t.Cleanup(func() { sysfsRoot, sysfsClassTTY = origRoot, origClass })
+
+	ttyDir = filepath.Join(root, "class", "tty")
+	require.NoError(t, os.MkdirAll(ttyDir, 0o750))
+
+	// USB serial adapter: attributes live on the device one level above the
+	// interface, which is what forces readUSBAttributes to walk upwards.
+	usbDevice := filepath.Join(root, "devices", "usb1", "1-2")
+	usbTTY := filepath.Join(usbDevice, "1-2:1.0", "ttyUSB0")
+	require.NoError(t, os.MkdirAll(usbTTY, 0o750))
+	for name, content := range map[string]string{
+		"idVendor":     "1a86\n",
+		"idProduct":    "7523\n",
+		"manufacturer": "QinHeng Electronics\n",
+		"product":      "USB Serial\n",
+		"serial":       "ABC123\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(usbDevice, name), []byte(content), 0o600))
+	}
+	require.NoError(t, os.Symlink("..", filepath.Join(usbTTY, "device")))
+	require.NoError(t, os.Symlink(usbTTY, filepath.Join(ttyDir, "ttyUSB0")))
+
+	// On-board UART, which must be rejected without reading any attributes.
+	builtinTTY := filepath.Join(root, "devices", "platform", "serial8250", "tty", "ttyS0")
+	require.NoError(t, os.MkdirAll(builtinTTY, 0o750))
+	require.NoError(t, os.Symlink("..", filepath.Join(builtinTTY, "device")))
+	require.NoError(t, os.Symlink(builtinTTY, filepath.Join(ttyDir, "ttyS0")))
+
+	sysfsRoot, sysfsClassTTY = root, ttyDir
+	return root, ttyDir
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot and sysfsClassTTY
+func TestProcessUSBDevice_ReturnsUSBSerialWithDescriptors(t *testing.T) {
+	_, ttyDir := fakeSysfs(t)
+
+	ports, err := processUSBDevice(t.Context(), ttyDir)
+	require.NoError(t, err)
+	require.Len(t, ports, 1, "only the USB adapter should be returned; ttyS0 is not USB")
+
+	port := ports[0]
+	assert.Equal(t, "/dev/ttyUSB0", port.Path)
+	assert.Equal(t, "ttyUSB0", port.Name)
+	// Read from the device one level above the interface, so this also pins
+	// down readUSBAttributes walking up the tree rather than only looking once.
+	assert.Equal(t, "1A86:7523", port.VIDPID)
+	assert.Equal(t, "QinHeng Electronics", port.Manufacturer)
+	assert.Equal(t, "USB Serial", port.Product)
+	assert.Equal(t, "ABC123", port.SerialNumber)
+}
+
+//nolint:paralleltest // mutates package-level readLink, sysfsRoot and sysfsClassTTY
+func TestProcessUSBDevice_KeepsUSBDeviceWhenClassLinkCannotAnswer(t *testing.T) {
+	// The readlink pre-filter is only safe if an unanswerable check falls
+	// through to resolving <tty>/device instead of counting as a rejection.
+	// With readLink always failing, the USB adapter must still be found with
+	// its descriptors intact.
+	_, ttyDir := fakeSysfs(t)
+
+	origReadLink := readLink
+	t.Cleanup(func() { readLink = origReadLink })
+	readLink = func(string) (string, error) { return "", errors.New("unanswerable") }
+
+	ports, err := processUSBDevice(t.Context(), ttyDir)
+	require.NoError(t, err)
+
+	require.Len(t, ports, 1, "the slow path must still find the adapter")
+	assert.Equal(t, "/dev/ttyUSB0", ports[0].Path)
+	assert.Equal(t, "1A86:7523", ports[0].VIDPID)
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot and sysfsClassTTY
+func TestProcessUSBDevice_SkipsPlainDirectoryEntries(t *testing.T) {
+	// Entries that are real directories rather than symlinks are skipped by
+	// the IsDir guard before the pre-filter is consulted at all.
+	_, ttyDir := fakeSysfs(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(ttyDir, "ttyUSB9"), 0o750))
+
+	ports, err := processUSBDevice(t.Context(), ttyDir)
+	require.NoError(t, err)
+
+	for _, port := range ports {
+		assert.NotEqual(t, "/dev/ttyUSB9", port.Path)
+	}
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot and sysfsClassTTY
+func TestProcessUSBDevice_SkipsTTYWithoutDeviceLink(t *testing.T) {
+	_, ttyDir := fakeSysfs(t)
+
+	// A virtual console has no device link at all.
+	require.NoError(t, os.Symlink(
+		filepath.Join(ttyDir, "..", "..", "devices", "virtual", "tty", "tty1"),
+		filepath.Join(ttyDir, "tty1"),
+	))
+
+	ports, err := processUSBDevice(t.Context(), ttyDir)
+	require.NoError(t, err)
+
+	for _, port := range ports {
+		assert.NotEqual(t, "/dev/tty1", port.Path)
+	}
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot and sysfsClassTTY
+func TestProcessUSBDevice_ErrorsWhenClassDirectoryIsMissing(t *testing.T) {
+	_, ttyDir := fakeSysfs(t)
+
+	_, err := processUSBDevice(t.Context(), filepath.Join(ttyDir, "does-not-exist"))
+
+	require.Error(t, err)
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot
+func TestReadUSBIdentifiers_RefusesPathsOutsideSysfsRoot(t *testing.T) {
+	// The path handed to these readers comes from resolving a symlink, so the
+	// root check is what stops a stray link making the detector read arbitrary
+	// files. Losing it would not fail any other test.
+	root, _ := fakeSysfs(t)
+
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "idVendor"), []byte("dead"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "idProduct"), []byte("beef"), 0o600))
+
+	var port serialPort
+	assert.False(t, readUSBIdentifiers(&port, outside), "a path outside sysfsRoot must be refused")
+	assert.Empty(t, port.VIDPID)
+
+	// The same files inside the root are read, so the refusal above is the
+	// root check and not a missing fixture.
+	inside := filepath.Join(root, "devices", "usb1", "1-2")
+	require.True(t, readUSBIdentifiers(&port, inside))
+	assert.Equal(t, "1A86:7523", port.VIDPID)
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot
+func TestReadUSBAttributes_StopsWalkingAtTheRoot(t *testing.T) {
+	// No idVendor anywhere above the starting point: the walk has to terminate
+	// rather than climbing past the filesystem root.
+	root, _ := fakeSysfs(t)
+
+	deep := filepath.Join(root, "devices", "platform", "serial8250", "tty", "ttyS0")
+	var port serialPort
+	readUSBAttributes(&port, deep)
+
+	assert.Empty(t, port.VIDPID, "an on-board UART carries no USB identifiers")
+}
+
+//nolint:paralleltest // mutates package-level sysfs and glob seams
+func TestGetSerialPorts_CombinesUSBAndBuiltinWithoutFallback(t *testing.T) {
+	_, _ = fakeSysfs(t)
+
+	origGlob, origStat := globPorts, statPort
+	t.Cleanup(func() { globPorts, statPort = origGlob, origStat })
+	globPorts = func(pattern string) ([]string, error) {
+		if pattern == "/dev/ttyS*" {
+			return []string{"/dev/ttyS0"}, nil
+		}
+		return nil, nil
+	}
+	statPort = func(string) (os.FileInfo, error) { return nil, nil } //nolint:nilnil // only the error is read
+
+	ports, err := getSerialPorts(t.Context())
+	require.NoError(t, err)
+
+	require.Len(t, ports, 2)
+	usb := portByPath(ports, "/dev/ttyUSB0")
+	require.NotNil(t, usb, "the sysfs walk should contribute the USB adapter")
+	assert.Equal(t, "1A86:7523", usb.VIDPID)
+
+	builtin := portByPath(ports, "/dev/ttyS0")
+	require.NotNil(t, builtin, "the built-in enumerator should contribute ttyS0")
+	assert.True(t, builtin.Builtin)
+}
+
+//nolint:paralleltest // mutates package-level sysfs and glob seams
+func TestGetSerialPorts_FallsBackOnlyWhenNothingWasFound(t *testing.T) {
+	// The fallback globs /dev directly and yields no USB metadata, so it only
+	// runs when both richer sources came back empty. A host with any on-board
+	// UART therefore never reaches it — which is why the fallback does not
+	// rescue a device the sysfs walk has rejected.
+	_, ttyDir := fakeSysfs(t)
+	sysfsClassTTY = filepath.Join(ttyDir, "empty")
+	require.NoError(t, os.MkdirAll(sysfsClassTTY, 0o750))
+
+	origGlob, origStat := globPorts, statPort
+	t.Cleanup(func() { globPorts, statPort = origGlob, origStat })
+
+	var patternsSeen []string
+	globPorts = func(pattern string) ([]string, error) {
+		patternsSeen = append(patternsSeen, pattern)
+		if pattern == "/dev/ttyUSB*" {
+			return []string{"/dev/ttyUSB7"}, nil
+		}
+		return nil, nil
+	}
+	statPort = func(string) (os.FileInfo, error) { return nil, nil } //nolint:nilnil // only the error is read
+
+	ports, err := getSerialPorts(t.Context())
+	require.NoError(t, err)
+
+	require.Len(t, ports, 1)
+	assert.Equal(t, "/dev/ttyUSB7", ports[0].Path)
+	assert.False(t, ports[0].Builtin)
+	assert.Contains(t, patternsSeen, "/dev/ttyACM*", "the fallback patterns should have been tried")
 }
