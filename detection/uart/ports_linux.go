@@ -155,59 +155,65 @@ func readUSBDescriptors(port *serialPort, path string) {
 	}
 }
 
-// getBuiltinSerialPorts returns non-USB serial ports
-func getBuiltinSerialPorts(_ context.Context) ([]serialPort, error) {
+// portPattern is a device glob together with whether the ports it matches are
+// UARTs wired into the board rather than removable adapters. ttyS and ttyAMA
+// are on-board, and the detector will not probe those speculatively.
+type portPattern struct {
+	glob    string
+	builtin bool
+}
+
+var builtinPortPatterns = []portPattern{
+	{glob: "/dev/ttyS*", builtin: true},
+	{glob: "/dev/ttyAMA*", builtin: true},
+}
+
+var fallbackPortPatterns = []portPattern{
+	{glob: "/dev/ttyUSB*"},
+	{glob: "/dev/ttyACM*"},
+	{glob: "/dev/ttyS*", builtin: true},
+	{glob: "/dev/ttyAMA*", builtin: true},
+}
+
+// globPorts and statPort are indirected so the pattern tables can be tested
+// against fixture paths rather than whatever device nodes the host happens to
+// have.
+var (
+	globPorts = filepath.Glob
+	statPort  = os.Stat
+)
+
+// portsMatching expands the patterns into ports, skipping anything that no
+// longer exists by the time it is stat'd.
+func portsMatching(patterns []portPattern) []serialPort {
 	var ports []serialPort
 
-	// Check for built-in serial ports
-	patterns := []string{"/dev/ttyS*", "/dev/ttyAMA*"}
 	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+		matches, err := globPorts(pattern.glob)
 		if err != nil {
 			continue
 		}
 
 		for _, path := range matches {
-			// Check if device exists and is accessible
-			if _, err := os.Stat(path); err == nil {
-				ports = append(ports, serialPort{
-					Path: path,
-					Name: filepath.Base(path),
-				})
+			if _, err := statPort(path); err != nil {
+				continue
 			}
+			ports = append(ports, serialPort{
+				Path:    path,
+				Name:    filepath.Base(path),
+				Builtin: pattern.builtin,
+			})
 		}
 	}
 
-	return ports, nil
+	return ports
+}
+
+// getBuiltinSerialPorts returns non-USB serial ports
+func getBuiltinSerialPorts(_ context.Context) ([]serialPort, error) {
+	return portsMatching(builtinPortPatterns), nil
 }
 
 func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
-	var ports []serialPort
-
-	// Common serial port patterns on Linux
-	patterns := []string{
-		"/dev/ttyUSB*",
-		"/dev/ttyACM*",
-		"/dev/ttyS*",
-		"/dev/ttyAMA*",
-	}
-
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			continue
-		}
-
-		for _, path := range matches {
-			// Check if device exists and is accessible
-			if _, err := os.Stat(path); err == nil {
-				ports = append(ports, serialPort{
-					Path: path,
-					Name: filepath.Base(path),
-				})
-			}
-		}
-	}
-
-	return ports, nil
+	return portsMatching(fallbackPortPatterns), nil
 }
