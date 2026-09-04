@@ -8,3 +8,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # codeql-action refuses to run when its sub-actions are on different
+      # versions ("Loaded a configuration file for version X, but running
+      # version Y"), so init, analyze and upload-sarif have to move together.
+      # Ungrouped, Dependabot opens one PR per sub-action and each one fails.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
