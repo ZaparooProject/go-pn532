@@ -49,12 +49,14 @@ lint:
 	@echo "Running linters..."
 	$(GOCMD) mod tidy
 	golangci-lint run ./...
+	golangci-lint fmt --diff
 
 # Run linters with auto-fix
 lint-fix:
 	@echo "Running linters with auto-fix..."
 	$(GOCMD) mod tidy
 	golangci-lint run --fix ./...
+	golangci-lint fmt
 
 # Run benchmarks
 bench:
