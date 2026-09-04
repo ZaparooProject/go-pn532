@@ -169,10 +169,10 @@ func (m *MockTransport) SendCommand(ctx context.Context, cmd byte, data []byte) 
 
 	// Simulate hardware delay if configured with context awareness
 	if delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		if err := awaitDelay(ctx, timer.C); err != nil {
+			return nil, err
 		}
 	}
 
@@ -288,6 +288,24 @@ func (m *MockTransport) ClearError(cmd byte) {
 	m.mu.Lock()
 	delete(m.errorMap, cmd)
 	m.mu.Unlock()
+}
+
+// awaitDelay waits for the simulated hardware delay, reporting cancellation in
+// preference to the delay elapsing.
+//
+// A goroutine descheduled past both the delay and the context deadline reaches
+// the select with both cases ready, and select then picks one at random. Taking
+// the delay branch there made a cancelled call return a response instead of an
+// error, roughly half the time, so cancellation tests failed intermittently on
+// loaded CI runners. Checking the context after the delay fires makes the
+// outcome depend on the deadline rather than on the scheduler.
+func awaitDelay(ctx context.Context, delay <-chan time.Time) error {
+	select {
+	case <-delay:
+		return ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SetDelay configures a delay to simulate hardware response time
