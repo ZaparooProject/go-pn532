@@ -54,37 +54,63 @@ func processUSBDevice(_ context.Context, _ string) ([]serialPort, error) {
 	return ports, nil
 }
 
-func processUSBDeviceEntry(ttyDir string, entry os.DirEntry) (serialPort, bool) {
-	if !entry.IsDir() {
-		ttyPath := filepath.Join(ttyDir, entry.Name())
-
-		// Check if it's a USB device by looking for the device symlink
-		devicePath := filepath.Join(ttyPath, "device")
-		if _, err := os.Stat(devicePath); err != nil {
-			return serialPort{}, false
-		}
-
-		// Resolve the device symlink to find the USB device
-		resolved, err := filepath.EvalSymlinks(devicePath)
-		if err != nil {
-			return serialPort{}, false
-		}
-
-		// Check if it's a USB device
-		if !strings.Contains(resolved, "/usb") {
-			return serialPort{}, false
-		}
-
-		port := serialPort{
-			Path: "/dev/" + entry.Name(),
-			Name: entry.Name(),
-		}
-
-		// Try to read USB attributes
-		readUSBAttributes(&port, resolved)
-		return port, true
+// classLinkNames reports whether the tty's class symlink target names a USB
+// device, and whether the question could be answered at all.
+//
+// /sys/class/tty/<name> is itself a symlink to the device directory, so one
+// readlink answers the USB question without resolving anything. That directory
+// is a descendant of whatever <name>/device resolves to, so it contains every
+// path component the slower check sees: this can skip work, never turn a USB
+// device into a non-USB one. When the entry is not a symlink at all (a kernel
+// built with CONFIG_SYSFS_DEPRECATED) the caller falls back to the slow path.
+func classLinkIsUSB(ttyPath string) (isUSB, known bool) {
+	target, err := os.Readlink(ttyPath)
+	if err != nil {
+		return false, false
 	}
-	return serialPort{}, false
+	return strings.Contains(target, "/usb"), true
+}
+
+func processUSBDeviceEntry(ttyDir string, entry os.DirEntry) (serialPort, bool) {
+	if entry.IsDir() {
+		return serialPort{}, false
+	}
+
+	ttyPath := filepath.Join(ttyDir, entry.Name())
+
+	// Reject non-USB entries before the expensive calls below. os.Stat
+	// resolves the whole symlink chain and EvalSymlinks lstats every component
+	// of the result, and on a host with no USB serial adapter attached all of
+	// that is done for every tty only to be discarded.
+	if isUSB, known := classLinkIsUSB(ttyPath); known && !isUSB {
+		return serialPort{}, false
+	}
+
+	// Check if it's a USB device by looking for the device symlink
+	devicePath := filepath.Join(ttyPath, "device")
+	if _, err := os.Stat(devicePath); err != nil {
+		return serialPort{}, false
+	}
+
+	// Resolve the device symlink to find the USB device
+	resolved, err := filepath.EvalSymlinks(devicePath)
+	if err != nil {
+		return serialPort{}, false
+	}
+
+	// Check if it's a USB device
+	if !strings.Contains(resolved, "/usb") {
+		return serialPort{}, false
+	}
+
+	port := serialPort{
+		Path: "/dev/" + entry.Name(),
+		Name: entry.Name(),
+	}
+
+	// Try to read USB attributes
+	readUSBAttributes(&port, resolved)
+	return port, true
 }
 
 // readUSBAttributes reads USB device attributes by walking up the device tree
