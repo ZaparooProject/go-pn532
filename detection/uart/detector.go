@@ -92,22 +92,31 @@ func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []se
 		// Copy the loop variable to avoid memory aliasing
 		portCopy := port
 		// Apply platform-specific positive filtering
-		if d.shouldIncludePort(&portCopy) {
+		if d.shouldIncludePort(&portCopy, opts.Mode) {
 			filtered = append(filtered, port)
 		}
 	}
 	return filtered
 }
 
-// shouldIncludePort determines if a port should be included based on platform-specific filtering
-func (d *detector) shouldIncludePort(port *serialPort) bool {
-	// Apply platform-specific positive filtering patterns
-	if d.matchesGoodPatterns(port) {
+// shouldIncludePort determines whether a port is worth handing to processPort.
+//
+// A port that carries recognisable evidence is always a candidate. Without that
+// evidence the answer depends on the mode: Safe verifies by probing and drops a
+// port that does not answer, so requiring a descriptor match first can only hide
+// real devices. The name patterns below are macOS device names, so on Linux no
+// port could ever match them and detection rested entirely on the four VID:PIDs
+// in isLikelyPN532; a PN532 on any other USB-serial bridge, or one whose sysfs
+// descriptors could not be read, was discarded without ever being probed.
+//
+// Built-in UARTs are the exception. They are frequently a serial console, and
+// writing PN532 frames at one is disruptive whether or not anything answers, so
+// those still have to look like a PN532 to earn a probe.
+func (d *detector) shouldIncludePort(port *serialPort, mode detection.Mode) bool {
+	if d.matchesGoodPatterns(port) || isLikelyPN532(port) {
 		return true
 	}
-
-	// If no positive patterns match, fall back to existing isLikelyPN532 logic
-	return isLikelyPN532(port)
+	return mode == detection.Safe && !port.Builtin
 }
 
 // matchesGoodPatterns checks if the port matches known good device patterns
@@ -264,6 +273,10 @@ type serialPort struct {
 	Manufacturer string
 	Product      string
 	SerialNumber string
+	// Builtin marks a UART wired into the board rather than a removable
+	// adapter. These are commonly consoles, so they are never probed
+	// speculatively.
+	Builtin bool
 }
 
 // isLikelyPN532 checks if a serial port is likely to be a PN532 device

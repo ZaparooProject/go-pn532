@@ -171,8 +171,9 @@ func getBuiltinSerialPorts(_ context.Context) ([]serialPort, error) {
 			// Check if device exists and is accessible
 			if _, err := os.Stat(path); err == nil {
 				ports = append(ports, serialPort{
-					Path: path,
-					Name: filepath.Base(path),
+					Path:    path,
+					Name:    filepath.Base(path),
+					Builtin: true,
 				})
 			}
 		}
@@ -184,16 +185,21 @@ func getBuiltinSerialPorts(_ context.Context) ([]serialPort, error) {
 func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
-	// Common serial port patterns on Linux
-	patterns := []string{
-		"/dev/ttyUSB*",
-		"/dev/ttyACM*",
-		"/dev/ttyS*",
-		"/dev/ttyAMA*",
+	// Common serial port patterns on Linux. ttyS and ttyAMA are on-board
+	// UARTs; the glob carries that through so the detector does not probe a
+	// serial console speculatively.
+	patterns := []struct {
+		glob    string
+		builtin bool
+	}{
+		{glob: "/dev/ttyUSB*"},
+		{glob: "/dev/ttyACM*"},
+		{glob: "/dev/ttyS*", builtin: true},
+		{glob: "/dev/ttyAMA*", builtin: true},
 	}
 
 	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+		matches, err := filepath.Glob(pattern.glob)
 		if err != nil {
 			continue
 		}
@@ -202,8 +208,9 @@ func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
 			// Check if device exists and is accessible
 			if _, err := os.Stat(path); err == nil {
 				ports = append(ports, serialPort{
-					Path: path,
-					Name: filepath.Base(path),
+					Path:    path,
+					Name:    filepath.Base(path),
+					Builtin: pattern.builtin,
 				})
 			}
 		}

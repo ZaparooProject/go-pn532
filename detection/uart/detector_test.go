@@ -89,3 +89,76 @@ func TestProcessPort_SafeMode_FailedProbeDiscardsUnknownDevice(t *testing.T) {
 	_, included := det.processPort(context.Background(), port, opts)
 	assert.False(t, included, "Safe mode must discard unknown device when probe fails")
 }
+
+func TestFilterPorts_SafeModeProbesPortsWithoutDescriptorEvidence(t *testing.T) {
+	// Regression test: on Linux the goodPatterns are macOS device names and can
+	// never match /dev/ttyUSB0, so a PN532 on any USB-serial bridge outside the
+	// four VID:PIDs in isLikelyPN532 was discarded before it was ever probed.
+	// Safe mode discards a port that fails its probe, so no descriptor evidence
+	// is needed to earn one. See zaparoo-core#1400.
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	ports := []serialPort{
+		{Path: "/dev/ttyUSB0", Name: "ttyUSB0"},                      // descriptors unreadable
+		{Path: "/dev/ttyUSB1", Name: "ttyUSB1", VIDPID: "1A86:55D4"}, // CH9102, not in isLikelyPN532
+	}
+
+	filtered := det.filterPorts(ports, opts)
+
+	assert.Len(t, filtered, 2, "Safe mode must probe USB serial ports it cannot identify")
+}
+
+func TestFilterPorts_SafeModeSkipsBuiltinUARTWithoutEvidence(t *testing.T) {
+	// Built-in UARTs are frequently a serial console. Writing PN532 frames at
+	// one is disruptive whether or not anything answers, so they still need to
+	// look like a PN532 before they are probed.
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	ports := []serialPort{
+		{Path: "/dev/ttyS0", Name: "ttyS0", Builtin: true},
+		{Path: "/dev/ttyAMA0", Name: "ttyAMA0", Builtin: true, Product: "PN532 breakout"},
+	}
+
+	filtered := det.filterPorts(ports, opts)
+
+	assert.Len(t, filtered, 1)
+	assert.Equal(t, "/dev/ttyAMA0", filtered[0].Path, "a built-in UART that names a PN532 is still a candidate")
+}
+
+func TestFilterPorts_NonSafeModesStillRequireEvidence(t *testing.T) {
+	// Passive never probes and Full reports a port even when its probe fails,
+	// so neither can lean on the probe to reject an unknown port.
+	det := &detector{}
+	ports := []serialPort{
+		{Path: "/dev/ttyUSB0", Name: "ttyUSB0"},
+		{Path: "/dev/ttyUSB1", Name: "ttyUSB1", VIDPID: "1A86:7523"},
+	}
+
+	for _, mode := range []detection.Mode{detection.Passive, detection.Full} {
+		filtered := det.filterPorts(ports, &detection.Options{Mode: mode})
+		assert.Len(t, filtered, 1)
+		assert.Equal(t, "/dev/ttyUSB1", filtered[0].Path)
+	}
+}
+
+func TestFilterPorts_SafeModeStillHonoursBlocklistAndIgnorePaths(t *testing.T) {
+	det := &detector{}
+	opts := &detection.Options{
+		Mode:        detection.Safe,
+		Blocklist:   []string{"16C0:0F38"},
+		IgnorePaths: []string{"/dev/ttyUSB2"},
+	}
+
+	ports := []serialPort{
+		{Path: "/dev/ttyUSB0", Name: "ttyUSB0", VIDPID: "16C0:0F38"},
+		{Path: "/dev/ttyUSB2", Name: "ttyUSB2"},
+		{Path: "/dev/ttyUSB3", Name: "ttyUSB3"},
+	}
+
+	filtered := det.filterPorts(ports, opts)
+
+	assert.Len(t, filtered, 1)
+	assert.Equal(t, "/dev/ttyUSB3", filtered[0].Path)
+}
