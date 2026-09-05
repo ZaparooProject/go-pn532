@@ -23,11 +23,20 @@ import (
 
 	"github.com/ZaparooProject/go-pn532"
 	"github.com/ZaparooProject/go-pn532/detection"
+	"github.com/ZaparooProject/go-pn532/internal/syncutil"
 	"github.com/ZaparooProject/go-pn532/transport/uart"
 )
 
 // detector implements the Detector interface for UART devices.
-type detector struct{}
+type detector struct {
+	// inflight holds the paths whose probe goroutine has not returned. A probe
+	// can block inside write(2) or tcdrain on a port whose device never reads
+	// its serial input, and nothing can interrupt a thread parked in the
+	// kernel like that, so the goroutine is abandoned and the path is left
+	// alone until it comes back.
+	inflight map[string]struct{}
+	mu       syncutil.Mutex
+}
 
 // New creates a new UART detector
 func New() detection.Detector {
@@ -89,6 +98,12 @@ func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []se
 			continue
 		}
 
+		// Skip a port whose earlier probe is still parked in the kernel;
+		// opening it again would park another goroutine on the same device.
+		if d.probeInflight(port.Path) {
+			continue
+		}
+
 		// Copy the loop variable to avoid memory aliasing
 		portCopy := port
 		// Apply platform-specific positive filtering
@@ -112,8 +127,22 @@ func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []se
 // Built-in UARTs are the exception. They are frequently a serial console, and
 // writing PN532 frames at one is disruptive whether or not anything answers, so
 // those still have to look like a PN532 to earn a probe.
+//
+// So is a serial port on a USB device that also presents a HID interface. That
+// is a gamepad adapter, lightgun, keyboard or spinner with a serial port on the
+// side, not a PN532, and its manufacturer string is often "Arduino", which is
+// exactly the evidence matchesGoodPatterns would accept. Writing at it is worse
+// than useless: an Arduino sketch that never reads its serial input stops
+// accepting data after about 128 bytes, and from then on the probe is parked in
+// the kernel with no way to interrupt it.
 func (d *detector) shouldIncludePort(port *serialPort, mode detection.Mode) bool {
-	if d.matchesGoodPatterns(port) || isLikelyPN532(port) {
+	if isLikelyPN532(port) {
+		return true
+	}
+	if port.HID {
+		return false
+	}
+	if d.matchesGoodPatterns(port) {
 		return true
 	}
 	return mode == detection.Safe && !port.Builtin
@@ -257,12 +286,63 @@ func (*detector) addPortMetadata(device *detection.DeviceInfo, port *serialPort)
 	}
 }
 
-// probePortWithTimeout performs device probing with timeout
-func (*detector) probePortWithTimeout(ctx context.Context, path string, mode detection.Mode) bool {
-	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+// probeTimeout bounds one port's probe. A PN532 answers GetFirmwareVersion well
+// inside this even with the wake-up retries. Tests shorten it.
+var probeTimeout = 500 * time.Millisecond
+
+// probePortWithTimeout probes one port without letting it hold up the pass.
+//
+// The probe's syscalls are not interruptible: a device that enumerates a serial
+// port but never reads it leaves write(2) and tcdrain blocked in the kernel, and
+// closing the fd from another goroutine does not unblock them. So the probe runs
+// on its own goroutine and the pass moves on when the deadline passes. The
+// abandoned goroutine keeps its path in inflight until it returns, which happens
+// once the device is unplugged and the kernel fails the write, so at most one
+// goroutine and one fd are parked per such device.
+func (d *detector) probePortWithTimeout(ctx context.Context, path string, mode detection.Mode) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	return probeDeviceFn(probeCtx, path, mode)
+	d.markInflight(path)
+	result := make(chan bool, 1)
+	go func() {
+		ok := probeDeviceFn(probeCtx, path, mode)
+		// Cleared before the answer is delivered, so a caller that receives
+		// it never sees the path still marked.
+		d.clearInflight(path)
+		result <- ok
+	}()
+
+	select {
+	case ok := <-result:
+		return ok
+	case <-probeCtx.Done():
+		// A late answer is discarded; the port is probed again on a later
+		// pass once its goroutine has come back.
+		return false
+	}
+}
+
+func (d *detector) markInflight(path string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.inflight == nil {
+		d.inflight = make(map[string]struct{})
+	}
+	d.inflight[path] = struct{}{}
+}
+
+func (d *detector) clearInflight(path string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.inflight, path)
+}
+
+func (d *detector) probeInflight(path string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.inflight[path]
+	return ok
 }
 
 // serialPort represents a serial port with metadata
@@ -277,6 +357,10 @@ type serialPort struct {
 	// adapter. These are commonly consoles, so they are never probed
 	// speculatively.
 	Builtin bool
+	// HID marks a port on a USB device that also presents a HID interface:
+	// a controller adapter or lightgun with a serial port on the side. Only
+	// the Linux enumerator can tell; elsewhere it stays false.
+	HID bool
 }
 
 // isLikelyPN532 checks if a serial port is likely to be a PN532 device

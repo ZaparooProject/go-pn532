@@ -345,3 +345,74 @@ func TestGetSerialPorts_FallsBackOnlyWhenNothingWasFound(t *testing.T) {
 	assert.False(t, ports[0].Builtin)
 	assert.Contains(t, patternsSeen, "/dev/ttyACM*", "the fallback patterns should have been tried")
 }
+
+// addHIDComposite adds an Arduino-style composite device to a fakeSysfs tree:
+// a CDC interface carrying ttyACM0 beside a HID interface, with the identity
+// attributes on the device above both, mirroring how the kernel lays out a
+// Pro Micro gamepad adapter.
+//
+//	<root>/class/tty/ttyACM0 -> ../../devices/usb1/1-3/1-3:1.0/tty/ttyACM0
+//	<root>/devices/usb1/1-3/{idVendor,idProduct,manufacturer,product}
+//	<root>/devices/usb1/1-3/1-3:1.0/bInterfaceClass = 02
+//	<root>/devices/usb1/1-3/1-3:1.1/bInterfaceClass = 03
+func addHIDComposite(t *testing.T, root, ttyDir string) {
+	t.Helper()
+
+	device := filepath.Join(root, "devices", "usb1", "1-3")
+	cdc := filepath.Join(device, "1-3:1.0")
+	hid := filepath.Join(device, "1-3:1.1")
+	tty := filepath.Join(cdc, "tty", "ttyACM0")
+	require.NoError(t, os.MkdirAll(tty, 0o750))
+	require.NoError(t, os.MkdirAll(hid, 0o750))
+	for name, content := range map[string]string{
+		"idVendor":     "2341\n",
+		"idProduct":    "8036\n",
+		"manufacturer": "Arduino LLC\n",
+		"product":      "Arduino Leonardo\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(device, name), []byte(content), 0o600))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(cdc, "bInterfaceClass"), []byte("02\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(hid, "bInterfaceClass"), []byte("03\n"), 0o600))
+	require.NoError(t, os.Symlink(filepath.Join("..", ".."), filepath.Join(tty, "device")))
+	require.NoError(t, os.Symlink(tty, filepath.Join(ttyDir, "ttyACM0")))
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot and sysfsClassTTY
+func TestProcessUSBDevice_MarksPortsOnHIDDevices(t *testing.T) {
+	root, ttyDir := fakeSysfs(t)
+	addHIDComposite(t, root, ttyDir)
+
+	ports, err := processUSBDevice(t.Context(), ttyDir)
+	require.NoError(t, err)
+	require.Len(t, ports, 2)
+
+	byPath := make(map[string]serialPort, len(ports))
+	for _, port := range ports {
+		byPath[port.Path] = port
+	}
+
+	acm, ok := byPath["/dev/ttyACM0"]
+	require.True(t, ok, "the composite device's tty must still be enumerated")
+	assert.True(t, acm.HID, "a device with a HID interface beside its CDC one must be marked")
+	assert.Equal(t, "2341:8036", acm.VIDPID)
+	assert.Equal(t, "Arduino LLC", acm.Manufacturer)
+
+	usb, ok := byPath["/dev/ttyUSB0"]
+	require.True(t, ok)
+	assert.False(t, usb.HID, "a plain USB-serial bridge has no HID interface")
+}
+
+//nolint:paralleltest // mutates package-level sysfsRoot
+func TestHasHIDInterface_RefusesPathsOutsideSysfsRoot(t *testing.T) {
+	root := t.TempDir()
+	origRoot := sysfsRoot
+	t.Cleanup(func() { sysfsRoot = origRoot })
+	sysfsRoot = filepath.Join(root, "sys")
+
+	outside := filepath.Join(root, "elsewhere", "1-3")
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "1-3:1.1"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "1-3:1.1", "bInterfaceClass"), []byte("03\n"), 0o600))
+
+	assert.False(t, hasHIDInterface(outside), "a path outside sysfsRoot must not be read")
+}

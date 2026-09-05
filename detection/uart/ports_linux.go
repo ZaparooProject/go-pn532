@@ -175,7 +175,37 @@ func readUSBIdentifiers(port *serialPort, path string) bool {
 
 	// Try to read manufacturer and product
 	readUSBDescriptors(port, path)
+	port.HID = hasHIDInterface(path)
 	return true
+}
+
+// usbClassHID is the bInterfaceClass value for a Human Interface Device.
+const usbClassHID = "03"
+
+// hasHIDInterface reports whether the USB device at devicePath presents a HID
+// interface alongside whatever gave it a tty. Interfaces sit under the device
+// directory as <device>:<config>.<number>, each with a bInterfaceClass.
+func hasHIDInterface(devicePath string) bool {
+	if !underSysfsRoot(devicePath) {
+		return false
+	}
+
+	pattern := filepath.Join(devicePath, filepath.Base(devicePath)+":*", "bInterfaceClass")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return false
+	}
+
+	for _, match := range matches {
+		classBytes, err := os.ReadFile(match) // #nosec G304 -- Path is validated to be under sysfsRoot
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(string(classBytes)) == usbClassHID {
+			return true
+		}
+	}
+	return false
 }
 
 // readUSBDescriptors reads manufacturer, product, and serial number

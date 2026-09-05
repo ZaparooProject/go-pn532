@@ -19,9 +19,11 @@ package uart
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ZaparooProject/go-pn532/detection"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProcessPort_SafeMode_FailedProbeDiscardsLikelyDevice(t *testing.T) {
@@ -161,4 +163,85 @@ func TestFilterPorts_SafeModeStillHonoursBlocklistAndIgnorePaths(t *testing.T) {
 
 	assert.Len(t, filtered, 1)
 	assert.Equal(t, "/dev/ttyUSB3", filtered[0].Path)
+}
+
+func TestFilterPorts_SkipsPortsOnHIDDevicesWithoutPN532Evidence(t *testing.T) {
+	// A serial port on a USB device that also presents a HID interface is a
+	// controller adapter, not a reader. An Arduino Pro Micro gamepad adapter
+	// enumerates a CDC port its sketch never reads, and probing it parks the
+	// probe in the kernel for good, so the "Arduino" manufacturer evidence
+	// that matchesGoodPatterns accepts must not qualify it. Known PN532
+	// bridge IDs and descriptors that name a PN532 still do.
+	// See zaparoo-core#1425, zaparoo-core#548.
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	ports := []serialPort{
+		{Path: "/dev/ttyACM0", Name: "ttyACM0", VIDPID: "2341:8036", Manufacturer: "Arduino LLC", HID: true},
+		{Path: "/dev/ttyACM1", Name: "ttyACM1", VIDPID: "1A86:7523", HID: true},
+		{Path: "/dev/ttyACM2", Name: "ttyACM2", Product: "PN532 NFC", HID: true},
+		{Path: "/dev/ttyUSB0", Name: "ttyUSB0", Manufacturer: "Arduino LLC"},
+	}
+
+	filtered := det.filterPorts(ports, opts)
+
+	paths := make([]string, 0, len(filtered))
+	for _, port := range filtered {
+		paths = append(paths, port.Path)
+	}
+	assert.Equal(t, []string{"/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyUSB0"}, paths)
+}
+
+func TestProcessPortsToDevices_ParkedProbeDoesNotHoldUpThePass(t *testing.T) {
+	// A probe that blocks in the kernel cannot be interrupted, so the pass has
+	// to move on without it: the reader on the next port must still be found
+	// inside the same pass, later passes must leave the parked port alone,
+	// and once its goroutine returns the port is eligible again.
+	origProbe, origTimeout := probeDeviceFn, probeTimeout
+	defer func() { probeDeviceFn, probeTimeout = origProbe, origTimeout }()
+	probeTimeout = 20 * time.Millisecond
+
+	release := make(chan struct{})
+	probeDeviceFn = func(_ context.Context, path string, _ detection.Mode) bool {
+		if path == "/dev/ttyACM0" {
+			// Ignores its context, the way write(2) does.
+			<-release
+			return false
+		}
+		return true
+	}
+
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+	ports := []serialPort{
+		{Path: "/dev/ttyACM0", Name: "ttyACM0"},
+		{Path: "/dev/ttyUSB0", Name: "ttyUSB0"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	devices := det.processPortsToDevices(ctx, det.filterPorts(ports, opts), opts)
+	require.Len(t, devices, 1, "the port after the parked one must still be probed in the same pass")
+	assert.Equal(t, "/dev/ttyUSB0", devices[0].Path)
+
+	filtered := det.filterPorts(ports, opts)
+	require.Len(t, filtered, 1, "a port whose probe is still parked must not be opened again")
+	assert.Equal(t, "/dev/ttyUSB0", filtered[0].Path)
+
+	close(release)
+	assert.Eventually(t, func() bool {
+		return len(det.filterPorts(ports, opts)) == 2
+	}, time.Second, time.Millisecond, "the port must become eligible once its probe goroutine returns")
+}
+
+func TestProbePortWithTimeout_ClearsInflightBeforeAnswering(t *testing.T) {
+	// A prompt probe must leave no trace: the caller that receives the answer
+	// never sees the path still marked in flight.
+	origProbe := probeDeviceFn
+	defer func() { probeDeviceFn = origProbe }()
+	probeDeviceFn = func(context.Context, string, detection.Mode) bool { return true }
+
+	det := &detector{}
+	assert.True(t, det.probePortWithTimeout(context.Background(), "/dev/ttyUSB0", detection.Safe))
+	assert.False(t, det.probeInflight("/dev/ttyUSB0"))
 }

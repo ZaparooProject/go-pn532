@@ -482,6 +482,32 @@ func TestDetectAll_Timeout(t *testing.T) {
 	assert.Equal(t, ErrDetectionTimeout, err)
 }
 
+func TestDetectAll_TimeoutKeepsDevicesAlreadyReported(t *testing.T) {
+	// One transport parked in the kernel must not throw away what another
+	// transport has already found.
+	originalRegistry := registry
+	defer func() { registry = originalRegistry }()
+
+	registry = nil
+	RegisterDetector(&BlockingDetector{})
+	RegisterDetector(&ConfigurableMockDetector{
+		transport: "prompt",
+		devices:   []DeviceInfo{{Transport: "prompt", Path: "/dev/ttyUSB0"}},
+	})
+
+	opts := DefaultOptions()
+	opts.Timeout = 10 * time.Millisecond
+	opts.EnableCache = false
+	opts.Transports = []string{"blocking", "prompt"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+	defer cancel()
+	devices, err := DetectAll(ctx, &opts)
+	require.NoError(t, err)
+	require.Len(t, devices, 1)
+	assert.Equal(t, "/dev/ttyUSB0", devices[0].Path)
+}
+
 // BlockingDetector is a detector that never returns.
 type BlockingDetector struct{}
 
