@@ -300,10 +300,16 @@ var probeTimeout = 500 * time.Millisecond
 // once the device is unplugged and the kernel fails the write, so at most one
 // goroutine and one fd are parked per such device.
 func (d *detector) probePortWithTimeout(ctx context.Context, path string, mode detection.Mode) bool {
+	// Admission is a single check-and-mark under the lock, so two passes
+	// running at once cannot both open the same port; the second simply
+	// treats it as not answering this time round.
+	if !d.tryMarkInflight(path) {
+		return false
+	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	d.markInflight(path)
 	result := make(chan bool, 1)
 	go func() {
 		ok := probeDeviceFn(probeCtx, path, mode)
@@ -323,13 +329,19 @@ func (d *detector) probePortWithTimeout(ctx context.Context, path string, mode d
 	}
 }
 
-func (d *detector) markInflight(path string) {
+// tryMarkInflight marks path as having a probe in progress and reports whether
+// it did; false means another probe already holds it.
+func (d *detector) tryMarkInflight(path string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.inflight == nil {
 		d.inflight = make(map[string]struct{})
 	}
+	if _, held := d.inflight[path]; held {
+		return false
+	}
 	d.inflight[path] = struct{}{}
+	return true
 }
 
 func (d *detector) clearInflight(path string) {

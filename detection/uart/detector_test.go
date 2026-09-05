@@ -18,6 +18,8 @@ package uart
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -244,4 +246,40 @@ func TestProbePortWithTimeout_ClearsInflightBeforeAnswering(t *testing.T) {
 	det := &detector{}
 	assert.True(t, det.probePortWithTimeout(context.Background(), "/dev/ttyUSB0", detection.Safe))
 	assert.False(t, det.probeInflight("/dev/ttyUSB0"))
+}
+
+func TestProbePortWithTimeout_OnlyOneProbeStartsPerPath(t *testing.T) {
+	// Two passes probing the same port at once must open it once. Admission
+	// is a single check-and-mark under the lock; the loser reports the port
+	// as not answering rather than parking a second goroutine on it.
+	origProbe, origTimeout := probeDeviceFn, probeTimeout
+	defer func() { probeDeviceFn, probeTimeout = origProbe, origTimeout }()
+	probeTimeout = 20 * time.Millisecond
+
+	var started atomic.Int32
+	release := make(chan struct{})
+	probeDeviceFn = func(context.Context, string, detection.Mode) bool {
+		started.Add(1)
+		<-release
+		return true
+	}
+
+	det := &detector{}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			det.probePortWithTimeout(context.Background(), "/dev/ttyACM0", detection.Safe)
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), started.Load(), "the same port must not be opened twice at once")
+	assert.True(t, det.probeInflight("/dev/ttyACM0"), "the one probe that started is still parked")
+
+	close(release)
+	assert.Eventually(t, func() bool {
+		return !det.probeInflight("/dev/ttyACM0")
+	}, time.Second, time.Millisecond, "the parked probe must release the path when it returns")
 }
