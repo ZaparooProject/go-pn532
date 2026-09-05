@@ -482,27 +482,21 @@ func TestDetectAll_Timeout(t *testing.T) {
 	assert.Equal(t, ErrDetectionTimeout, err)
 }
 
-func TestDetectAll_TimeoutKeepsDevicesAlreadyReported(t *testing.T) {
+func TestCollectDetectionResults_TimeoutKeepsDevicesAlreadyReported(t *testing.T) {
 	// One transport parked in the kernel must not throw away what another
-	// transport has already found.
-	originalRegistry := registry
-	defer func() { registry = originalRegistry }()
-
-	registry = nil
-	RegisterDetector(&BlockingDetector{})
-	RegisterDetector(&ConfigurableMockDetector{
-		transport: "prompt",
-		devices:   []DeviceInfo{{Transport: "prompt", Path: "/dev/ttyUSB0"}},
-	})
-
-	opts := DefaultOptions()
-	opts.Timeout = 10 * time.Millisecond
-	opts.EnableCache = false
-	opts.Transports = []string{"blocking", "prompt"}
-
-	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+	// transport has already found. The results channel is unbuffered so the
+	// context is cancelled only once the first result has been received;
+	// nothing here depends on scheduling or a timer.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	devices, err := DetectAll(ctx, &opts)
+
+	results := make(chan detectionResult)
+	go func() {
+		results <- detectionResult{devices: []DeviceInfo{{Transport: "prompt", Path: "/dev/ttyUSB0"}}}
+		cancel()
+	}()
+
+	devices, err := collectDetectionResults(ctx, results, 2)
 	require.NoError(t, err)
 	require.Len(t, devices, 1)
 	assert.Equal(t, "/dev/ttyUSB0", devices[0].Path)
