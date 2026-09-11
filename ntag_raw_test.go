@@ -1,14 +1,26 @@
 // Copyright 2026 The Zaparoo Project Contributors.
 // SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package pn532
 
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
+	"github.com/ZaparooProject/go-pn532/internal/syncutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,8 +32,8 @@ type transportCall struct {
 
 type rawType2Transport struct {
 	*MockTransport
-	mu    sync.Mutex
 	calls []transportCall
+	mu    syncutil.Mutex
 }
 
 func newRawType2Device(t *testing.T) (*Device, *rawType2Transport) {
@@ -66,10 +78,12 @@ func TestNTAGTagRawType2ReadBlock(t *testing.T) {
 	t.Parallel()
 
 	device, transport := newRawType2Device(t)
-	response := []byte{0x43, 0x00}
-	response = append(response, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08)
-	response = append(response, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10)
-	response = append(response, 0xAA, 0xBB) // Optional card CRC is not part of the returned block.
+	response := []byte{
+		0x43, 0x00,
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+		0xAA, 0xBB, // Optional card CRC is not part of the returned block.
+	}
 	transport.SetResponse(cmdInCommunicateThru, response)
 
 	tag := NewNTAGTag(device, []byte{0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, 0)
@@ -85,9 +99,11 @@ func TestNTAGTagRawType2ReadBlock(t *testing.T) {
 func TestNTAGTagRawType2ReadBlockRetries(t *testing.T) {
 	t.Parallel()
 
-	success := []byte{0x43, 0x00}
-	success = append(success, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08)
-	success = append(success, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10)
+	success := []byte{
+		0x43, 0x00,
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+	}
 	short := []byte{0x43, 0x00, 0x01, 0x02}
 
 	tests := []struct {
@@ -152,8 +168,8 @@ func TestNTAGTagRawType2WriteResponses(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		response      []byte
 		errorContains string
+		response      []byte
 	}{
 		{name: "ACK", response: []byte{0x43, 0x00, 0x0A}},
 		{name: "missing ACK", response: []byte{0x43, 0x00}, errorContains: "missing Type 2 ACK"},
@@ -186,8 +202,8 @@ func TestNTAGTagRawType2WriteFramingStatusRequiresReadback(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		readbackResponse []byte
 		wantError        string
+		readbackResponse []byte
 	}{
 		{
 			name:             "matching readback",

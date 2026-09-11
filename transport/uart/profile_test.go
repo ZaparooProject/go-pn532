@@ -1,5 +1,17 @@
 // Copyright 2026 The Zaparoo Project Contributors.
 // SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //nolint:paralleltest // Tests replace package-level serial enumeration/open functions.
 package uart
@@ -23,9 +35,9 @@ func TestResolveDeviceProfile(t *testing.T) {
 	t.Cleanup(func() { getDetailedPortsList = original })
 
 	tests := []struct {
-		name    string
 		port    *enumerator.PortDetails
 		listErr error
+		name    string
 		want    deviceProfile
 	}{
 		{
@@ -124,7 +136,7 @@ type recordingSerialPort struct {
 
 func (p *recordingSerialPort) Write(data []byte) (int, error) {
 	p.writes = append(p.writes, append([]byte(nil), data...))
-	return p.Port.Write(data)
+	return p.Port.Write(data) //nolint:wrapcheck // Pass-through wrapper
 }
 
 func TestResponseACKProfileBehavior(t *testing.T) {

@@ -1,15 +1,27 @@
 // Copyright 2026 The Zaparoo Project Contributors.
 // SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //nolint:paralleltest // Tests use an intentionally stateful transport simulator.
 package tagops
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/ZaparooProject/go-pn532"
+	"github.com/ZaparooProject/go-pn532/internal/syncutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,15 +38,15 @@ type tagopsTransportCall struct {
 
 type rawTagopsTransport struct {
 	*pn532.MockTransport
-	mu    sync.Mutex
 	calls []tagopsTransportCall
+	mu    syncutil.Mutex
 }
 
 func (t *rawTagopsTransport) SendCommand(ctx context.Context, cmd byte, data []byte) ([]byte, error) {
 	t.mu.Lock()
 	t.calls = append(t.calls, tagopsTransportCall{cmd: cmd, data: append([]byte(nil), data...)})
 	t.mu.Unlock()
-	return t.MockTransport.SendCommand(ctx, cmd, data)
+	return t.MockTransport.SendCommand(ctx, cmd, data) //nolint:wrapcheck // Pass-through wrapper
 }
 
 func (*rawTagopsTransport) HasCapability(capability pn532.TransportCapability) bool {

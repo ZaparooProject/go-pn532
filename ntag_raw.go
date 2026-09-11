@@ -36,11 +36,11 @@ func (t *NTAGTag) requiresRawType2Commands() bool {
 func calculateCRCA(data []byte) [2]byte {
 	crc := uint16(0x6363)
 	for _, value := range data {
-		ch := value ^ byte(crc)
+		ch := value ^ byte(crc) //nolint:gosec // intentional truncation to the low CRC byte
 		ch ^= ch << 4
 		crc = (crc >> 8) ^ (uint16(ch) << 8) ^ (uint16(ch) << 3) ^ (uint16(ch) >> 4)
 	}
-	return [2]byte{byte(crc), byte(crc >> 8)}
+	return [2]byte{byte(crc), byte(crc >> 8)} //nolint:gosec // intentional truncation to CRC bytes
 }
 
 // appendCRCA returns a copy of data with its CRC-A bytes appended.
@@ -66,13 +66,13 @@ func (t *NTAGTag) sendType2Command(
 	ctx context.Context,
 	command []byte,
 	standardSend func(context.Context, []byte) ([]byte, error),
-) ([]byte, bool, error) {
+) (data []byte, usedRaw bool, err error) {
 	if t.requiresRawType2Commands() {
-		data, err := t.sendRawType2Command(ctx, command)
+		data, err = t.sendRawType2Command(ctx, command)
 		return data, true, err
 	}
 
-	data, err := standardSend(ctx, command)
+	data, err = standardSend(ctx, command)
 	return data, false, err
 }
 
@@ -111,7 +111,7 @@ func (t *NTAGTag) verifyRawType2WriteAfterFramingError(
 ) error {
 	actual, err := t.readRawType2Pages(ctx, block, ntagBlockSize)
 	if err != nil {
-		return fmt.Errorf("%w (block %d): ambiguous Type 2 ACK (%v); verification read failed: %w",
+		return fmt.Errorf("%w (block %d): ambiguous Type 2 ACK (%w); verification read failed: %w",
 			ErrTagWriteFailed, block, writeErr, err)
 	}
 	if !bytes.Equal(actual, expected) {
@@ -121,4 +121,48 @@ func (t *NTAGTag) verifyRawType2WriteAfterFramingError(
 
 	Debugf("NTAG raw Type 2 write block %d verified after framing status", block)
 	return nil
+}
+
+// writeRawType2Block sends a Type 2 WRITE through the raw command path and
+// validates the tag's acknowledgment.
+func (t *NTAGTag) writeRawType2Block(ctx context.Context, block uint8, cmd, data []byte) error {
+	response, err := t.sendRawType2Command(ctx, cmd)
+	if err != nil {
+		// Some raw transports surface the tag's four-bit write ACK as PN532
+		// framing status 0x05. Treat it as ambiguous and require exact readback.
+		if isRawType2WriteFramingError(err) {
+			return t.verifyRawType2WriteAfterFramingError(ctx, block, data, err)
+		}
+		return fmt.Errorf("%w (block %d): %w", ErrTagWriteFailed, block, err)
+	}
+	if len(response) == 0 {
+		return fmt.Errorf("%w (block %d): missing Type 2 ACK", ErrTagWriteFailed, block)
+	}
+	if response[0]&0x0F != 0x0A {
+		return fmt.Errorf("%w (block %d): Type 2 NAK 0x%02X", ErrTagWriteFailed, block, response[0])
+	}
+	return nil
+}
+
+// readRawType2BlockWithRetry reads a page through the raw command path and
+// retries short responses or transient RF errors.
+func (t *NTAGTag) readRawType2BlockWithRetry(ctx context.Context, block uint8) ([]byte, error) {
+	var lastErr error
+	for range NTAGBlockReadRetries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		data, err := t.readRawType2Pages(ctx, block, ntagBlockSize)
+		if err == nil {
+			return data, nil
+		}
+		if !isRetryableRawType2ReadError(err) {
+			return nil, err
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("%w (block %d after %d retries): %w",
+		ErrTagReadFailed, block, NTAGBlockReadRetries, lastErr)
 }

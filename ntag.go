@@ -224,22 +224,7 @@ func (t *NTAGTag) WriteBlock(ctx context.Context, block uint8, data []byte) erro
 	cmd = append(cmd, ntagCmdWrite, block)
 	cmd = append(cmd, data...)
 	if t.requiresRawType2Commands() {
-		response, err := t.sendRawType2Command(ctx, cmd)
-		if err != nil {
-			// Some raw transports surface the tag's four-bit write ACK as PN532
-			// framing status 0x05. Treat it as ambiguous and require exact readback.
-			if isRawType2WriteFramingError(err) {
-				return t.verifyRawType2WriteAfterFramingError(ctx, block, data, err)
-			}
-			return fmt.Errorf("%w (block %d): %w", ErrTagWriteFailed, block, err)
-		}
-		if len(response) == 0 {
-			return fmt.Errorf("%w (block %d): missing Type 2 ACK", ErrTagWriteFailed, block)
-		}
-		if response[0]&0x0F != 0x0A {
-			return fmt.Errorf("%w (block %d): Type 2 NAK 0x%02X", ErrTagWriteFailed, block, response[0])
-		}
-		return nil
+		return t.writeRawType2Block(ctx, block, cmd, data)
 	}
 
 	_, err := t.device.SendDataExchangeWithRetry(ctx, cmd)
@@ -275,6 +260,20 @@ func isRetryableError(err error) bool {
 		errors.Is(err, ErrTagReadFailed)
 }
 
+// selectForNDEFRead re-selects the target before an NDEF read. This is defensive
+// against prior operations that used InCommunicateThru (0x42), which doesn't
+// maintain the PN532's target selection state (PN532 User Manual §7.3.9). Raw
+// Type 2 transports preserve selection themselves and may not return an
+// InSelect response, so they are skipped.
+func (t *NTAGTag) selectForNDEFRead(ctx context.Context) {
+	if t.requiresRawType2Commands() {
+		return
+	}
+	if err := t.device.InSelect(ctx); err != nil {
+		Debugln("NTAG ReadNDEF: InSelect failed, continuing anyway:", err)
+	}
+}
+
 // ReadNDEF reads NDEF data from the NTAG tag using FastRead for optimal performance
 //
 //nolint:gocognit,revive // Complexity from necessary error handling and NDEF capability check
@@ -290,13 +289,7 @@ func (t *NTAGTag) ReadNDEF(ctx context.Context) (*NDEFMessage, error) {
 		return &NDEFMessage{}, nil
 	}
 
-	// Ensure target is selected before reading on standard transports. Raw Type 2
-	// transports preserve selection themselves and may not return an InSelect response.
-	if !t.requiresRawType2Commands() {
-		if err := t.device.InSelect(ctx); err != nil {
-			Debugln("NTAG ReadNDEF: InSelect failed, continuing anyway:", err)
-		}
-	}
+	t.selectForNDEFRead(ctx)
 
 	header, err := t.readNDEFHeader(ctx)
 	if err != nil {
@@ -1412,24 +1405,7 @@ func (t *NTAGTag) getTagTypeName() string {
 // and retries short responses or transient RF errors when necessary.
 func (t *NTAGTag) readBlockWithRetry(ctx context.Context, block uint8) ([]byte, error) {
 	if t.requiresRawType2Commands() {
-		var lastErr error
-		for range NTAGBlockReadRetries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-
-			data, err := t.readRawType2Pages(ctx, block, ntagBlockSize)
-			if err == nil {
-				return data, nil
-			}
-			if !isRetryableRawType2ReadError(err) {
-				return nil, err
-			}
-			lastErr = err
-		}
-
-		return nil, fmt.Errorf("%w (block %d after %d retries): %w",
-			ErrTagReadFailed, block, NTAGBlockReadRetries, lastErr)
+		return t.readRawType2BlockWithRetry(ctx, block)
 	}
 	for i := range NTAGBlockReadRetries {
 		if err := ctx.Err(); err != nil {
