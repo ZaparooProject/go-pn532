@@ -17,7 +17,9 @@ package uart
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,8 +37,21 @@ type detector struct {
 	// kernel like that, so the goroutine is abandoned and the path is left
 	// alone until it comes back.
 	inflight map[string]struct{}
-	mu       syncutil.Mutex
+	// lastFingerprint and lastOptions describe the previous pass, and
+	// lastPassEmpty records that it had no candidate left after filtering.
+	// See passUnchanged.
+	lastFingerprint string
+	lastOptions     string
+	mu              syncutil.Mutex
+	lastPassEmpty   bool
 }
+
+// getSerialPortsFn and passFingerprint are indirected so tests can count
+// enumerations and control the fingerprint.
+var (
+	getSerialPortsFn = getSerialPorts
+	passFingerprint  = enumerationFingerprint
+)
 
 // New creates a new UART detector
 func New() detection.Detector {
@@ -55,12 +70,23 @@ func (*detector) Transport() string {
 
 // Detect searches for PN532 devices on serial ports
 func (d *detector) Detect(ctx context.Context, opts *detection.Options) ([]detection.DeviceInfo, error) {
+	// Read before enumerating, so a device plugged in during this pass leaves
+	// a fingerprint the next pass will not match.
+	fingerprint, haveFingerprint := passFingerprint()
+	key := optionsKey(opts)
+	if haveFingerprint && d.passUnchanged(fingerprint, key) {
+		return nil, detection.ErrNoDevicesFound
+	}
+
 	ports, err := d.enumeratePorts(ctx)
 	if err != nil {
+		d.recordPass(fingerprint, key, haveFingerprint && errors.Is(err, detection.ErrNoDevicesFound))
 		return nil, err
 	}
 
 	filteredPorts := d.filterPorts(ports, opts)
+	d.recordPass(fingerprint, key,
+		haveFingerprint && len(filteredPorts) == 0 && !d.anyInflight() && ctx.Err() == nil)
 	devices := d.processPortsToDevices(ctx, filteredPorts, opts)
 
 	if len(devices) == 0 {
@@ -70,9 +96,48 @@ func (d *detector) Detect(ctx context.Context, opts *detection.Options) ([]detec
 	return devices, nil
 }
 
+// passUnchanged reports whether the previous pass had no candidate left after
+// filtering and nothing it depended on has changed since: the same device
+// nodes, going by the fingerprint, and the same options. Such a pass would
+// enumerate the same ports and filter every one of them out again, so it can
+// be skipped. A pass that probed anything is never skipped, so a port that
+// failed a probe or timed out is still retried on the next one.
+func (d *detector) passUnchanged(fingerprint, key string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastPassEmpty && d.lastFingerprint == fingerprint && d.lastOptions == key
+}
+
+// recordPass stores what the next pass is compared against.
+func (d *detector) recordPass(fingerprint, key string, empty bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lastFingerprint = fingerprint
+	d.lastOptions = key
+	d.lastPassEmpty = empty
+}
+
+// anyInflight reports whether any probe goroutine has not returned. A port
+// left out because its probe is parked must be looked at again once it comes
+// back, so a pass that left one out is never skipped.
+func (d *detector) anyInflight() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.inflight) > 0
+}
+
+// optionsKey captures the options that decide which ports survive filtering.
+func optionsKey(opts *detection.Options) string {
+	ignored := slices.Clone(opts.IgnorePaths)
+	slices.Sort(ignored)
+	blocked := slices.Clone(opts.Blocklist)
+	slices.Sort(blocked)
+	return fmt.Sprintf("%d\x00%s\x00%s", opts.Mode, strings.Join(ignored, "\x01"), strings.Join(blocked, "\x01"))
+}
+
 // enumeratePorts gets the list of available serial ports
 func (*detector) enumeratePorts(ctx context.Context) ([]serialPort, error) {
-	ports, err := getSerialPorts(ctx)
+	ports, err := getSerialPortsFn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enumerate serial ports: %w", err)
 	}
@@ -222,6 +287,11 @@ func (d *detector) processPort(ctx context.Context, port *serialPort,
 
 	if shouldProbe {
 		probeSuccess := d.probePortWithTimeout(ctx, port.Path, opts.Mode)
+		opts.ReportProbe(detection.ProbeResult{
+			Transport: detection.TransportUART,
+			Path:      port.Path,
+			Found:     probeSuccess,
+		})
 		if probeSuccess {
 			device.Confidence = detection.High
 		} else if opts.Mode == detection.Safe {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ZaparooProject/go-pn532/detection"
+	"github.com/ZaparooProject/go-pn532/internal/syncutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -226,4 +227,34 @@ func TestDetectLinux_NoBuses_ReturnsError(t *testing.T) {
 	opts := &detection.Options{Mode: detection.Safe}
 	_, err := detectLinux(context.Background(), opts)
 	assert.ErrorIs(t, err, detection.ErrNoDevicesFound)
+}
+
+func TestDetectLinux_ReportsEachProbe(t *testing.T) {
+	saveFns(t)
+
+	findI2CBusesFn = fakeBuses("/dev/i2c-0", "/dev/i2c-1")
+	probeDeviceFn = func(_ context.Context, path string, _ detection.Mode) bool {
+		return path == "/dev/i2c-1"
+	}
+
+	var mu syncutil.Mutex
+	var results []detection.ProbeResult
+	opts := &detection.Options{
+		Mode: detection.Safe,
+		OnProbe: func(r detection.ProbeResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, r)
+		},
+	}
+
+	_, err := detectLinux(context.Background(), opts)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.ElementsMatch(t, []detection.ProbeResult{
+		{Transport: detection.TransportI2C, Path: "/dev/i2c-0", Found: false},
+		{Transport: detection.TransportI2C, Path: "/dev/i2c-1", Found: true},
+	}, results)
 }

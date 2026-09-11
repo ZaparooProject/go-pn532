@@ -283,3 +283,131 @@ func TestProbePortWithTimeout_OnlyOneProbeStartsPerPath(t *testing.T) {
 		return !det.probeInflight("/dev/ttyACM0")
 	}, time.Second, time.Millisecond, "the parked probe must release the path when it returns")
 }
+
+func TestProcessPort_ReportsProbeOutcome(t *testing.T) {
+	origProbe := probeDeviceFn
+	defer func() { probeDeviceFn = origProbe }()
+
+	for _, answered := range []bool{true, false} {
+		probeDeviceFn = func(context.Context, string, detection.Mode) bool {
+			return answered
+		}
+
+		var results []detection.ProbeResult
+		opts := &detection.Options{
+			Mode:    detection.Safe,
+			OnProbe: func(r detection.ProbeResult) { results = append(results, r) },
+		}
+		port := &serialPort{Path: "/dev/ttyUSB0", Name: "ttyUSB0", VIDPID: "AAAA:BBBB"}
+
+		(&detector{}).processPort(context.Background(), port, opts)
+
+		assert.Equal(t, []detection.ProbeResult{
+			{Transport: detection.TransportUART, Path: "/dev/ttyUSB0", Found: answered},
+		}, results)
+	}
+}
+
+func TestProcessPort_PassiveModeReportsNoProbe(t *testing.T) {
+	origProbe := probeDeviceFn
+	defer func() { probeDeviceFn = origProbe }()
+	probeDeviceFn = func(context.Context, string, detection.Mode) bool {
+		t.Fatal("passive mode must not probe")
+		return false
+	}
+
+	reported := false
+	opts := &detection.Options{
+		Mode:    detection.Passive,
+		OnProbe: func(detection.ProbeResult) { reported = true },
+	}
+	port := &serialPort{Path: "/dev/ttyUSB0", Name: "ttyUSB0", VIDPID: "1A86:7523"}
+
+	_, included := (&detector{}).processPort(context.Background(), port, opts)
+
+	assert.True(t, included, "a likely PN532 is still a passive candidate")
+	assert.False(t, reported, "a candidate that was not probed is not reported")
+}
+
+// stubPass replaces port enumeration and the fingerprint for one test and
+// returns a count of enumerations.
+func stubPass(t *testing.T, ports []serialPort, fingerprint *string, haveFingerprint bool) *int {
+	t.Helper()
+	origPorts, origFingerprint := getSerialPortsFn, passFingerprint
+	t.Cleanup(func() { getSerialPortsFn, passFingerprint = origPorts, origFingerprint })
+
+	calls := 0
+	getSerialPortsFn = func(context.Context) ([]serialPort, error) {
+		calls++
+		return ports, nil
+	}
+	passFingerprint = func() (string, bool) { return *fingerprint, haveFingerprint }
+	return &calls
+}
+
+// builtinOnly is a bus whose only port never survives filtering.
+var builtinOnly = []serialPort{{Path: "/dev/ttyS0", Name: "ttyS0", Builtin: true}}
+
+func TestDetect_SkipsAnUnchangedPassWithNoCandidates(t *testing.T) {
+	fingerprint := "a"
+	calls := stubPass(t, builtinOnly, &fingerprint, true)
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	_, err := det.Detect(context.Background(), opts)
+	require.ErrorIs(t, err, detection.ErrNoDevicesFound)
+	_, err = det.Detect(context.Background(), opts)
+	require.ErrorIs(t, err, detection.ErrNoDevicesFound)
+	assert.Equal(t, 1, *calls, "an unchanged pass with no candidate is skipped")
+
+	fingerprint = "b"
+	_, _ = det.Detect(context.Background(), opts)
+	assert.Equal(t, 2, *calls, "a device node change forces a pass")
+
+	_, _ = det.Detect(context.Background(), &detection.Options{
+		Mode:        detection.Safe,
+		IgnorePaths: []string{"/dev/ttyUSB0"},
+	})
+	assert.Equal(t, 3, *calls, "an options change forces a pass")
+}
+
+func TestDetect_NeverSkipsAfterAPassThatProbed(t *testing.T) {
+	origProbe := probeDeviceFn
+	defer func() { probeDeviceFn = origProbe }()
+	probeDeviceFn = func(context.Context, string, detection.Mode) bool { return false }
+
+	fingerprint := "a"
+	unknown := []serialPort{{Path: "/dev/ttyUSB0", Name: "ttyUSB0", VIDPID: "AAAA:BBBB"}}
+	calls := stubPass(t, unknown, &fingerprint, true)
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	for range 3 {
+		_, _ = det.Detect(context.Background(), opts)
+	}
+	assert.Equal(t, 3, *calls, "a port that failed its probe is probed again on the next pass")
+}
+
+func TestDetect_NeverSkipsWhileAProbeIsParked(t *testing.T) {
+	fingerprint := "a"
+	calls := stubPass(t, builtinOnly, &fingerprint, true)
+	det := &detector{inflight: map[string]struct{}{"/dev/ttyUSB1": {}}}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	for range 3 {
+		_, _ = det.Detect(context.Background(), opts)
+	}
+	assert.Equal(t, 3, *calls, "a parked port must be looked at again once its probe returns")
+}
+
+func TestDetect_NeverSkipsWithoutAFingerprint(t *testing.T) {
+	fingerprint := ""
+	calls := stubPass(t, builtinOnly, &fingerprint, false)
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	for range 3 {
+		_, _ = det.Detect(context.Background(), opts)
+	}
+	assert.Equal(t, 3, *calls)
+}
