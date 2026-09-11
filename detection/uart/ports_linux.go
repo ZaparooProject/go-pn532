@@ -33,8 +33,8 @@ func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 	return ports, nil
 }
 
-// getSerialPortsFallback returns serial ports without metadata
-// processUSBDevice checks if a tty entry is a USB device and returns its port info
+// processUSBDevice returns the USB serial devices in the tty class directory
+// ttyDir, with their USB metadata.
 func processUSBDevice(_ context.Context, ttyDir string) ([]serialPort, error) {
 	entries, err := os.ReadDir(ttyDir)
 	if err != nil {
@@ -304,6 +304,7 @@ func portsMatching(patterns []portPattern) []serialPort {
 	return ports
 }
 
+// getSerialPortsFallback returns serial ports without metadata
 func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
 	return portsMatching(fallbackPortPatterns), nil
 }
