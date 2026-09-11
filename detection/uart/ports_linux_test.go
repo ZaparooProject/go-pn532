@@ -95,17 +95,25 @@ func TestGetSerialPortsFallback_MarksOnBoardUARTsBuiltin(t *testing.T) {
 	}
 }
 
-func TestGetBuiltinSerialPorts_ReturnsOnlyOnBoardUARTs(t *testing.T) {
-	stubPortLookup(t, "/dev/ttyUSB0", "/dev/ttyS0", "/dev/ttyAMA0")
+//nolint:paralleltest // mutates package-level sysfs and stat seams
+func TestBuiltinPortsFromEntries_ReturnsOnlyOnBoardUARTs(t *testing.T) {
+	_, ttyDir := fakeSysfs(t)
+	for _, name := range []string{"ttyAMA0", "ttyS1", "tty0"} {
+		require.NoError(t, os.WriteFile(filepath.Join(ttyDir, name), nil, 0o600))
+	}
+	// ttyS1 is listed in sysfs but has no device node.
+	stubPortLookup(t, "/dev/ttyUSB0", "/dev/ttyS0", "/dev/ttyAMA0", "/dev/tty0")
 
-	ports, err := getBuiltinSerialPorts(context.Background())
+	entries, err := os.ReadDir(ttyDir)
 	require.NoError(t, err)
-	require.Len(t, ports, 2, "USB adapters belong to the sysfs enumerator, not this one")
+	ports := builtinPortsFromEntries(entries)
 
+	require.Len(t, ports, 2, "USB adapters and virtual consoles are not on-board UARTs")
 	for _, port := range ports {
 		assert.True(t, port.Builtin, "%s should be marked built-in", port.Path)
 	}
-	assert.Nil(t, portByPath(ports, "/dev/ttyUSB0"))
+	assert.NotNil(t, portByPath(ports, "/dev/ttyS0"))
+	assert.NotNil(t, portByPath(ports, "/dev/ttyAMA0"))
 }
 
 func TestPortsMatching_SkipsPathsThatVanishBeforeStat(t *testing.T) {
