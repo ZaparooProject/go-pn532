@@ -108,7 +108,7 @@ func TestFilterPorts_SafeModeProbesPortsWithoutDescriptorEvidence(t *testing.T) 
 		{Path: "/dev/ttyUSB1", Name: "ttyUSB1", VIDPID: "1A86:55D4"}, // CH9102, not in isLikelyPN532
 	}
 
-	filtered := det.filterPorts(ports, opts)
+	filtered, _ := det.filterPorts(ports, opts)
 
 	assert.Len(t, filtered, 2, "Safe mode must probe USB serial ports it cannot identify")
 }
@@ -125,7 +125,7 @@ func TestFilterPorts_SafeModeSkipsBuiltinUARTWithoutEvidence(t *testing.T) {
 		{Path: "/dev/ttyAMA0", Name: "ttyAMA0", Builtin: true, Product: "PN532 breakout"},
 	}
 
-	filtered := det.filterPorts(ports, opts)
+	filtered, _ := det.filterPorts(ports, opts)
 
 	assert.Len(t, filtered, 1)
 	assert.Equal(t, "/dev/ttyAMA0", filtered[0].Path, "a built-in UART that names a PN532 is still a candidate")
@@ -141,7 +141,7 @@ func TestFilterPorts_NonSafeModesStillRequireEvidence(t *testing.T) {
 	}
 
 	for _, mode := range []detection.Mode{detection.Passive, detection.Full} {
-		filtered := det.filterPorts(ports, &detection.Options{Mode: mode})
+		filtered, _ := det.filterPorts(ports, &detection.Options{Mode: mode})
 		assert.Len(t, filtered, 1)
 		assert.Equal(t, "/dev/ttyUSB1", filtered[0].Path)
 	}
@@ -161,7 +161,7 @@ func TestFilterPorts_SafeModeStillHonoursBlocklistAndIgnorePaths(t *testing.T) {
 		{Path: "/dev/ttyUSB3", Name: "ttyUSB3"},
 	}
 
-	filtered := det.filterPorts(ports, opts)
+	filtered, _ := det.filterPorts(ports, opts)
 
 	assert.Len(t, filtered, 1)
 	assert.Equal(t, "/dev/ttyUSB3", filtered[0].Path)
@@ -185,7 +185,7 @@ func TestFilterPorts_SkipsPortsOnHIDDevicesWithoutPN532Evidence(t *testing.T) {
 		{Path: "/dev/ttyUSB0", Name: "ttyUSB0", Manufacturer: "Arduino LLC"},
 	}
 
-	filtered := det.filterPorts(ports, opts)
+	filtered, _ := det.filterPorts(ports, opts)
 
 	paths := make([]string, 0, len(filtered))
 	for _, port := range filtered {
@@ -222,17 +222,20 @@ func TestProcessPortsToDevices_ParkedProbeDoesNotHoldUpThePass(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	devices := det.processPortsToDevices(ctx, det.filterPorts(ports, opts), opts)
+	candidates, _ := det.filterPorts(ports, opts)
+	devices := det.processPortsToDevices(ctx, candidates, opts)
 	require.Len(t, devices, 1, "the port after the parked one must still be probed in the same pass")
 	assert.Equal(t, "/dev/ttyUSB0", devices[0].Path)
 
-	filtered := det.filterPorts(ports, opts)
+	filtered, skipped := det.filterPorts(ports, opts)
 	require.Len(t, filtered, 1, "a port whose probe is still parked must not be opened again")
+	assert.True(t, skipped, "leaving out a parked port must be reported")
 	assert.Equal(t, "/dev/ttyUSB0", filtered[0].Path)
 
 	close(release)
 	assert.Eventually(t, func() bool {
-		return len(det.filterPorts(ports, opts)) == 2
+		eligible, _ := det.filterPorts(ports, opts)
+		return len(eligible) == 2
 	}, time.Second, time.Millisecond, "the port must become eligible once its probe goroutine returns")
 }
 
@@ -388,16 +391,56 @@ func TestDetect_NeverSkipsAfterAPassThatProbed(t *testing.T) {
 	assert.Equal(t, 3, *calls, "a port that failed its probe is probed again on the next pass")
 }
 
-func TestDetect_NeverSkipsWhileAProbeIsParked(t *testing.T) {
+func TestDetect_ProbesAParkedPortOnThePassAfterItReturns(t *testing.T) {
+	// A pass that left a port out because its probe had not returned must not
+	// be recorded as empty, whenever the probe's return lands relative to the
+	// rest of the pass, or the port would not be looked at again.
+	origProbe := probeDeviceFn
+	defer func() { probeDeviceFn = origProbe }()
+	probeDeviceFn = func(context.Context, string, detection.Mode) bool { return true }
+
 	fingerprint := "a"
-	calls := stubPass(t, builtinOnly, &fingerprint, true)
+	parked := []serialPort{{Path: "/dev/ttyUSB1", Name: "ttyUSB1", VIDPID: "AAAA:BBBB"}}
+	calls := stubPass(t, parked, &fingerprint, true)
 	det := &detector{inflight: map[string]struct{}{"/dev/ttyUSB1": {}}}
 	opts := &detection.Options{Mode: detection.Safe}
 
-	for range 3 {
-		_, _ = det.Detect(context.Background(), opts)
-	}
-	assert.Equal(t, 3, *calls, "a parked port must be looked at again once its probe returns")
+	_, err := det.Detect(context.Background(), opts)
+	require.ErrorIs(t, err, detection.ErrNoDevicesFound, "the parked port is left out")
+
+	det.clearInflight("/dev/ttyUSB1")
+
+	devices, err := det.Detect(context.Background(), opts)
+	require.NoError(t, err)
+	assert.Equal(t, 2, *calls, "the pass after leaving out a parked port is not skipped")
+	require.Len(t, devices, 1)
+	assert.Equal(t, "/dev/ttyUSB1", devices[0].Path)
+}
+
+func TestDetect_ForcesAPassOnceTheIntervalIsUp(t *testing.T) {
+	// The fingerprint could miss a node on a filesystem with coarse timestamps,
+	// so an unchanged fingerprint only suppresses passes for a bounded time.
+	fingerprint := "a"
+	calls := stubPass(t, builtinOnly, &fingerprint, true)
+	origNow := nowFn
+	t.Cleanup(func() { nowFn = origNow })
+	clock := time.Unix(1_000, 0)
+	nowFn = func() time.Time { return clock }
+
+	det := &detector{}
+	opts := &detection.Options{Mode: detection.Safe}
+
+	_, _ = det.Detect(context.Background(), opts)
+	clock = clock.Add(forcedPassInterval - time.Second)
+	_, _ = det.Detect(context.Background(), opts)
+	assert.Equal(t, 1, *calls, "skipped within the interval")
+
+	clock = clock.Add(time.Second)
+	_, _ = det.Detect(context.Background(), opts)
+	assert.Equal(t, 2, *calls, "an unchanged fingerprint still gets a pass once the interval is up")
+
+	_, _ = det.Detect(context.Background(), opts)
+	assert.Equal(t, 2, *calls, "the interval restarts from that pass")
 }
 
 func TestDetect_NeverSkipsWithoutAFingerprint(t *testing.T) {

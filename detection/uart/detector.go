@@ -37,20 +37,29 @@ type detector struct {
 	// kernel like that, so the goroutine is abandoned and the path is left
 	// alone until it comes back.
 	inflight map[string]struct{}
-	// lastFingerprint and lastOptions describe the previous pass, and
-	// lastPassEmpty records that it had no candidate left after filtering.
-	// See passUnchanged.
+	// lastFingerprint and lastOptions describe the previous pass,
+	// lastEnumerated is when a pass last enumerated the ports, and
+	// lastPassEmpty records that the previous pass had no candidate left after
+	// filtering. See passUnchanged.
+	lastEnumerated  time.Time
 	lastFingerprint string
 	lastOptions     string
 	mu              syncutil.Mutex
 	lastPassEmpty   bool
 }
 
-// getSerialPortsFn and passFingerprint are indirected so tests can count
-// enumerations and control the fingerprint.
+// forcedPassInterval bounds how long passes are skipped. The fingerprint only
+// sees changes to the modification time of /dev; if it ever misses a new node,
+// for example on a filesystem with coarse timestamps where a node is removed
+// and recreated within one tick, the port is still found within this interval.
+const forcedPassInterval = 30 * time.Second
+
+// getSerialPortsFn, passFingerprint and nowFn are indirected so tests can count
+// enumerations and control the fingerprint and the clock.
 var (
 	getSerialPortsFn = getSerialPorts
 	passFingerprint  = enumerationFingerprint
+	nowFn            = time.Now
 )
 
 // New creates a new UART detector
@@ -74,19 +83,20 @@ func (d *detector) Detect(ctx context.Context, opts *detection.Options) ([]detec
 	// a fingerprint the next pass will not match.
 	fingerprint, haveFingerprint := passFingerprint()
 	key := optionsKey(opts)
-	if haveFingerprint && d.passUnchanged(fingerprint, key) {
+	now := nowFn()
+	if haveFingerprint && d.passUnchanged(fingerprint, key, now) {
 		return nil, detection.ErrNoDevicesFound
 	}
 
 	ports, err := d.enumeratePorts(ctx)
 	if err != nil {
-		d.recordPass(fingerprint, key, haveFingerprint && errors.Is(err, detection.ErrNoDevicesFound))
+		d.recordPass(fingerprint, key, now, haveFingerprint && errors.Is(err, detection.ErrNoDevicesFound))
 		return nil, err
 	}
 
-	filteredPorts := d.filterPorts(ports, opts)
-	d.recordPass(fingerprint, key,
-		haveFingerprint && len(filteredPorts) == 0 && !d.anyInflight() && ctx.Err() == nil)
+	filteredPorts, skippedInflight := d.filterPorts(ports, opts)
+	d.recordPass(fingerprint, key, now,
+		haveFingerprint && len(filteredPorts) == 0 && !skippedInflight && ctx.Err() == nil)
 	devices := d.processPortsToDevices(ctx, filteredPorts, opts)
 
 	if len(devices) == 0 {
@@ -100,30 +110,28 @@ func (d *detector) Detect(ctx context.Context, opts *detection.Options) ([]detec
 // filtering and nothing it depended on has changed since: the same device
 // nodes, going by the fingerprint, and the same options. Such a pass would
 // enumerate the same ports and filter every one of them out again, so it can
-// be skipped. A pass that probed anything is never skipped, so a port that
-// failed a probe or timed out is still retried on the next one.
-func (d *detector) passUnchanged(fingerprint, key string) bool {
+// be skipped, until forcedPassInterval has passed since the ports were last
+// enumerated. A pass that probed anything, or left a port out because its
+// earlier probe had not returned, is never followed by a skip, so such a port
+// is looked at again on the next pass.
+func (d *detector) passUnchanged(fingerprint, key string, now time.Time) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.lastPassEmpty && d.lastFingerprint == fingerprint && d.lastOptions == key
+	return d.lastPassEmpty &&
+		d.lastFingerprint == fingerprint &&
+		d.lastOptions == key &&
+		now.Sub(d.lastEnumerated) < forcedPassInterval
 }
 
-// recordPass stores what the next pass is compared against.
-func (d *detector) recordPass(fingerprint, key string, empty bool) {
+// recordPass stores what the next pass is compared against. enumerated is when
+// this pass enumerated the ports.
+func (d *detector) recordPass(fingerprint, key string, enumerated time.Time, empty bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.lastEnumerated = enumerated
 	d.lastFingerprint = fingerprint
 	d.lastOptions = key
 	d.lastPassEmpty = empty
-}
-
-// anyInflight reports whether any probe goroutine has not returned. A port
-// left out because its probe is parked must be looked at again once it comes
-// back, so a pass that left one out is never skipped.
-func (d *detector) anyInflight() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.inflight) > 0
 }
 
 // optionsKey captures the options that decide which ports survive filtering.
@@ -149,9 +157,13 @@ func (*detector) enumeratePorts(ctx context.Context) ([]serialPort, error) {
 	return ports, nil
 }
 
-// filterPorts removes blocked devices from the port list
-func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []serialPort {
-	var filtered []serialPort
+// filterPorts removes blocked devices from the port list. skippedInflight
+// reports whether a port was left out because its earlier probe has not
+// returned; a pass that did so must not be recorded as empty, or that port
+// would not be looked at again once the probe comes back.
+func (d *detector) filterPorts(
+	ports []serialPort, opts *detection.Options,
+) (filtered []serialPort, skippedInflight bool) {
 	for _, port := range ports {
 		// Skip blocked devices (existing functionality)
 		if port.VIDPID != "" && detection.IsBlocked(port.VIDPID, opts.Blocklist) {
@@ -166,6 +178,7 @@ func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []se
 		// Skip a port whose earlier probe is still parked in the kernel;
 		// opening it again would park another goroutine on the same device.
 		if d.probeInflight(port.Path) {
+			skippedInflight = true
 			continue
 		}
 
@@ -176,7 +189,7 @@ func (d *detector) filterPorts(ports []serialPort, opts *detection.Options) []se
 			filtered = append(filtered, port)
 		}
 	}
-	return filtered
+	return filtered, skippedInflight
 }
 
 // shouldIncludePort determines whether a port is worth handing to processPort.
