@@ -56,7 +56,7 @@ func detectLinux(ctx context.Context, opts *detection.Options) ([]detection.Devi
 
 	var devices []detection.DeviceInfo
 	if opts.Mode >= detection.Safe {
-		devices = probeI2CBuses(ctx, filtered, opts.Mode)
+		devices = probeI2CBuses(ctx, filtered, opts)
 	} else {
 		devices = buildPassiveDevices(filtered)
 	}
@@ -103,7 +103,7 @@ type probeResult struct {
 // Results are returned in the same order as the input buses slice.
 // Context cancellation is best-effort: the initial transport open does not accept
 // a context, so goroutines may block on kernel I2C setup until it completes.
-func probeI2CBuses(ctx context.Context, buses []i2cBusInfo, mode detection.Mode) []detection.DeviceInfo {
+func probeI2CBuses(ctx context.Context, buses []i2cBusInfo, opts *detection.Options) []detection.DeviceInfo {
 	results := make(chan probeResult, len(buses))
 
 	var wg sync.WaitGroup
@@ -118,7 +118,13 @@ func probeI2CBuses(ctx context.Context, buses []i2cBusInfo, mode detection.Mode)
 			default:
 			}
 
-			if probeDeviceFn(ctx, busPath, mode) {
+			found := probeDeviceFn(ctx, busPath, opts.Mode)
+			opts.ReportProbe(detection.ProbeResult{
+				Transport: detection.TransportI2C,
+				Path:      busPath,
+				Found:     found,
+			})
+			if found {
 				pn532.Debugf("i2c: probe succeeded on %s", busPath)
 				results <- probeResult{index: index, info: makeDeviceInfo(busPath, detection.High)}
 			} else {
