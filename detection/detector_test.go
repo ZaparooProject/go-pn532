@@ -679,3 +679,18 @@ func TestFilterDevices_IgnorePathsAndBlocklist(t *testing.T) {
 	require.Len(t, result, 1)
 	assert.Equal(t, "/dev/ttyUSB1", result[0].Path)
 }
+
+func TestOptionsReportProbe(t *testing.T) {
+	t.Parallel()
+
+	result := ProbeResult{Transport: TransportUART, Path: "/dev/ttyUSB0", Found: true}
+
+	var nilOpts *Options
+	assert.NotPanics(t, func() { nilOpts.ReportProbe(result) }, "nil options")
+	assert.NotPanics(t, func() { (&Options{}).ReportProbe(result) }, "no callback")
+
+	var got []ProbeResult
+	opts := &Options{OnProbe: func(r ProbeResult) { got = append(got, r) }}
+	opts.ReportProbe(result)
+	assert.Equal(t, []ProbeResult{result}, got)
+}

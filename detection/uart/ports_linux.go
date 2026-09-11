@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -14,16 +15,14 @@ import (
 func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 	var ports []serialPort
 
-	// First try to get USB serial devices with full metadata
-	usbPorts, err := processUSBDevice(ctx, sysfsClassTTY)
+	// One read of the tty class serves both enumerators: USB serial devices
+	// with their metadata, and the on-board UARTs, which appear there too.
+	// Globbing /dev for the on-board ones instead read the whole of /dev twice
+	// on every pass.
+	entries, err := os.ReadDir(sysfsClassTTY)
 	if err == nil {
-		ports = append(ports, usbPorts...)
-	}
-
-	// Then get built-in serial ports
-	builtinPorts, err := getBuiltinSerialPorts(ctx)
-	if err == nil {
-		ports = append(ports, builtinPorts...)
+		ports = append(ports, usbPortsFromEntries(sysfsClassTTY, entries)...)
+		ports = append(ports, builtinPortsFromEntries(entries)...)
 	}
 
 	// If we still have no ports, fallback to basic enumeration
@@ -34,23 +33,51 @@ func getSerialPorts(ctx context.Context) ([]serialPort, error) {
 	return ports, nil
 }
 
-// getSerialPortsFallback returns serial ports without metadata
-// processUSBDevice checks if a tty entry is a USB device and returns its port info
+// processUSBDevice returns the USB serial devices in the tty class directory
+// ttyDir, with their USB metadata.
 func processUSBDevice(_ context.Context, ttyDir string) ([]serialPort, error) {
-	var ports []serialPort
-
 	entries, err := os.ReadDir(ttyDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory %s: %w", ttyDir, err)
 	}
+	return usbPortsFromEntries(ttyDir, entries), nil
+}
 
+// usbPortsFromEntries returns the USB serial devices among the tty class
+// entries read from ttyDir.
+func usbPortsFromEntries(ttyDir string, entries []os.DirEntry) []serialPort {
+	var ports []serialPort
 	for _, entry := range entries {
 		if port, ok := processUSBDeviceEntry(ttyDir, entry); ok {
 			ports = append(ports, port)
 		}
 	}
+	return ports
+}
 
-	return ports, nil
+// builtinPrefixes name the on-board UARTs. ttyS and ttyAMA are wired into the
+// board rather than removable adapters, and the detector will not probe those
+// speculatively.
+var builtinPrefixes = []string{"ttyS", "ttyAMA"}
+
+// builtinPortsFromEntries returns the on-board UARTs among the tty class
+// entries, skipping any whose device node does not exist.
+func builtinPortsFromEntries(entries []os.DirEntry) []serialPort {
+	var ports []serialPort
+	for _, entry := range entries {
+		name := entry.Name()
+		if !slices.ContainsFunc(builtinPrefixes, func(prefix string) bool {
+			return strings.HasPrefix(name, prefix)
+		}) {
+			continue
+		}
+		path := "/dev/" + name
+		if _, err := statPort(path); err != nil {
+			continue
+		}
+		ports = append(ports, serialPort{Path: path, Name: name, Builtin: true})
+	}
+	return ports
 }
 
 // sysfsClassTTY is where the tty class lives, and sysfsRoot bounds the paths the
@@ -236,11 +263,6 @@ type portPattern struct {
 	builtin bool
 }
 
-var builtinPortPatterns = []portPattern{
-	{glob: "/dev/ttyS*", builtin: true},
-	{glob: "/dev/ttyAMA*", builtin: true},
-}
-
 var fallbackPortPatterns = []portPattern{
 	{glob: "/dev/ttyUSB*"},
 	{glob: "/dev/ttyACM*"},
@@ -282,11 +304,7 @@ func portsMatching(patterns []portPattern) []serialPort {
 	return ports
 }
 
-// getBuiltinSerialPorts returns non-USB serial ports
-func getBuiltinSerialPorts(_ context.Context) ([]serialPort, error) {
-	return portsMatching(builtinPortPatterns), nil
-}
-
+// getSerialPortsFallback returns serial ports without metadata
 func getSerialPortsFallback(_ context.Context) ([]serialPort, error) {
 	return portsMatching(fallbackPortPatterns), nil
 }

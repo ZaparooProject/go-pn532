@@ -128,6 +128,11 @@ func probeAndUpdateDevice(
 	defer cancel()
 
 	confirmed := probeSPIDevice(probeCtx, config, opts.Mode)
+	opts.ReportProbe(detection.ProbeResult{
+		Transport: detection.TransportSPI,
+		Path:      device.Path,
+		Found:     confirmed,
+	})
 	if confirmed {
 		device.Confidence = detection.High
 		return true

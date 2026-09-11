@@ -86,6 +86,13 @@ func (d DeviceInfo) String() string {
 
 // Options configures the detection behavior
 type Options struct {
+	// OnProbe, when set, is called for every candidate a detector opens to
+	// probe, with whether a PN532 answered. Candidates a detector skips without
+	// probing are not reported, and a result served from the cache reports
+	// nothing. Detectors may probe in parallel, so it can be called from
+	// several goroutines at once, and it can still be called after DetectAll
+	// has returned on a timeout.
+	OnProbe func(ProbeResult)
 	// USB VID:PID pairs to skip (e.g., ["1234:5678", "ABCD:EF01"])
 	Blocklist []string
 	// Device paths to explicitly ignore (e.g., ["/dev/ttyUSB0", "COM2"])
@@ -101,6 +108,25 @@ type Options struct {
 	Mode Mode
 	// Enable result caching
 	EnableCache bool
+}
+
+// ProbeResult reports one candidate a detector probed.
+type ProbeResult struct {
+	// Transport is the detector's transport, such as TransportUART.
+	Transport string
+	// Path is the probed device path.
+	Path string
+	// Found reports whether a PN532 answered the probe. It is false when the
+	// device did not answer in time, including when an earlier probe of the
+	// same path has not returned yet.
+	Found bool
+}
+
+// ReportProbe passes result to OnProbe when it is set.
+func (o *Options) ReportProbe(result ProbeResult) {
+	if o != nil && o.OnProbe != nil {
+		o.OnProbe(result)
+	}
 }
 
 // DefaultTransports returns the safe default transports used for auto-detect.

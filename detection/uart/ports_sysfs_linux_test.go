@@ -293,10 +293,9 @@ func TestGetSerialPorts_CombinesUSBAndBuiltinWithoutFallback(t *testing.T) {
 
 	origGlob, origStat := globPorts, statPort
 	t.Cleanup(func() { globPorts, statPort = origGlob, origStat })
+	var globbed []string
 	globPorts = func(pattern string) ([]string, error) {
-		if pattern == "/dev/ttyS*" {
-			return []string{"/dev/ttyS0"}, nil
-		}
+		globbed = append(globbed, pattern)
 		return nil, nil
 	}
 	statPort = func(string) (os.FileInfo, error) { return nil, nil } //nolint:nilnil // only the error is read
@@ -310,8 +309,9 @@ func TestGetSerialPorts_CombinesUSBAndBuiltinWithoutFallback(t *testing.T) {
 	assert.Equal(t, "1A86:7523", usb.VIDPID)
 
 	builtin := portByPath(ports, "/dev/ttyS0")
-	require.NotNil(t, builtin, "the built-in enumerator should contribute ttyS0")
+	require.NotNil(t, builtin, "the tty class listing should contribute ttyS0")
 	assert.True(t, builtin.Builtin)
+	assert.Empty(t, globbed, "a readable tty class needs no /dev globbing")
 }
 
 //nolint:paralleltest // mutates package-level sysfs and glob seams
