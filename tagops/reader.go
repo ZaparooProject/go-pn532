@@ -110,7 +110,7 @@ func (t *TagOperations) readNTAGBlocks(ctx context.Context, startBlock, endBlock
 	}
 
 	startPage, endPage := t.validatePageRange(startBlock, endBlock)
-	expectedBytes := (int(endPage - startPage + 1)) * 4
+	expectedBytes := int(endPage-startPage+1) * 4
 
 	var result []byte
 	currentPage := startPage

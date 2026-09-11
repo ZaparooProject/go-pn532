@@ -245,6 +245,12 @@ func collectDetectionResults(
 				allDevices = append(allDevices, res.devices...)
 			}
 		case <-ctx.Done():
+			// Detectors that have already answered are not thrown away with
+			// the one that has not; a wedged transport costs its own results,
+			// not everyone's.
+			if len(allDevices) > 0 {
+				return allDevices, nil
+			}
 			return nil, ErrDetectionTimeout
 		}
 	}

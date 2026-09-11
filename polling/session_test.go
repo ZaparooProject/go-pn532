@@ -499,15 +499,19 @@ func TestSafeTimerStop(t *testing.T) {
 
 	t.Run("StopsActiveTimer", func(t *testing.T) {
 		t.Parallel()
-		callbackExecuted := false
+		// Atomic because the callback runs on the timer goroutine. It should
+		// never run, which is the point of the test, but a plain bool would
+		// report a data race instead of this assertion if it ever did.
+		var callbackExecuted int32
 		timer := time.AfterFunc(100*time.Millisecond, func() {
-			callbackExecuted = true
+			atomic.StoreInt32(&callbackExecuted, 1)
 		})
 
 		safeTimerStop(timer)
 		time.Sleep(150 * time.Millisecond) // Wait longer than the timer duration
 
-		assert.False(t, callbackExecuted, "Timer callback should not execute after safe stop")
+		assert.Equal(t, int32(0), atomic.LoadInt32(&callbackExecuted),
+			"Timer callback should not execute after safe stop")
 	})
 
 	t.Run("HandlesNilTimer", func(t *testing.T) {
@@ -519,11 +523,21 @@ func TestSafeTimerStop(t *testing.T) {
 	t.Run("HandlesAlreadyFiredTimer", func(t *testing.T) {
 		t.Parallel()
 		var callbackExecuted int32
+		// Wait for the callback rather than sleeping a fixed 10ms past a 1ms
+		// timer: on a loaded runner the timer goroutine is not always scheduled
+		// in that window, and the precondition assert then failed even though
+		// safeTimerStop, the thing under test, was never reached.
+		fired := make(chan struct{})
 		timer := time.AfterFunc(1*time.Millisecond, func() {
 			atomic.StoreInt32(&callbackExecuted, 1)
+			close(fired)
 		})
 
-		time.Sleep(10 * time.Millisecond) // Let timer fire
+		select {
+		case <-fired:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timer callback did not run")
+		}
 		assert.Equal(t, int32(1), atomic.LoadInt32(&callbackExecuted), "Timer should have fired")
 
 		// Should not block or panic when stopping an already-fired timer

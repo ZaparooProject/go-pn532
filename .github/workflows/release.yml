@@ -31,10 +31,10 @@ jobs:
             suffix: '.exe'
 
     steps:
-    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
     - name: Set up Go
-      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
       with:
         go-version-file: go.mod
 
@@ -65,7 +65,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
     - name: Download all artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -83,18 +83,18 @@ jobs:
         output-file: artifacts/sbom.spdx.json
 
     - name: Attest build provenance
-      uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+      uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
       with:
         subject-path: 'artifacts/*.zip'
 
     - name: Attest SBOM
-      uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+      uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
       with:
         subject-path: 'artifacts/*.zip'
         sbom-path: artifacts/sbom.spdx.json
 
     - name: Create Release
-      uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
       with:
         files: |
           artifacts/*.zip
