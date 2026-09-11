@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !darwin || cgo
+
 //nolint:paralleltest // Tests replace package-level serial enumeration/open functions.
 package uart
 

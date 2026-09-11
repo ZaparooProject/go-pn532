@@ -13,20 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build darwin && !cgo
+
 package uart
 
-const (
-	pn532KillerVID     = "1A86"
-	pn532KillerPID     = "55D3"
-	pn532KillerProduct = "PN532Killer-UART"
-)
-
-// deviceProfile identifies transport behavior selected from serial device metadata.
-type deviceProfile uint8
-
-const (
-	// profileGeneric preserves standard PN532 UART behavior.
-	profileGeneric deviceProfile = iota
-	// profilePN532Killer enables behavior required by compatible PN532Killer firmware.
-	profilePN532Killer
-)
+// resolveDeviceProfile always selects the generic profile here. The serial
+// enumerator that reports USB identity needs cgo on macOS, so without it no
+// port can be identified as a PN532Killer.
+func resolveDeviceProfile(string) deviceProfile {
+	return profileGeneric
+}
