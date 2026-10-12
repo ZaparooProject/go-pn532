@@ -29,10 +29,13 @@ import (
 // in-memory NTAG, so a test can check what a write leaves on the tag.
 type memoryNTAGTransport struct {
 	*MockTransport
-	writeErr    error
-	pages       [][ntagBlockSize]byte
-	writtenPage []uint8
-	mu          syncutil.Mutex
+	writeErr error
+	// failWritePage and failReadPage make one page fail, or none when negative.
+	pages         [][ntagBlockSize]byte
+	writtenPage   []uint8
+	failWritePage int
+	failReadPage  int
+	mu            syncutil.Mutex
 }
 
 func newMemoryNTAGDevice(t *testing.T, totalPages int) (*Device, *memoryNTAGTransport) {
@@ -40,6 +43,13 @@ func newMemoryNTAGDevice(t *testing.T, totalPages int) (*Device, *memoryNTAGTran
 	transport := &memoryNTAGTransport{
 		MockTransport: NewMockTransport(),
 		pages:         make([][ntagBlockSize]byte, totalPages),
+		failWritePage: -1,
+		failReadPage:  -1,
+	}
+	// A tag as delivered: the first configuration page, four from the end,
+	// ends in the AUTH0 byte.
+	if totalPages >= ntag213TotalPages {
+		transport.pages[totalPages-4] = [ntagBlockSize]byte{0x04, 0x00, 0x00, 0xFF}
 	}
 	transport.SelectTarget()
 	device, err := New(transport)
@@ -67,7 +77,7 @@ var noAnswer = []byte{0x41, 0x01}
 func (m *memoryNTAGTransport) read(page int) []byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if page >= len(m.pages) {
+	if page >= len(m.pages) || page == m.failReadPage {
 		return noAnswer
 	}
 	// A real tag returns four pages, wrapping to page 0 past the end.
@@ -81,7 +91,7 @@ func (m *memoryNTAGTransport) read(page int) []byte {
 func (m *memoryNTAGTransport) write(page int, data []byte) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.writeErr != nil {
+	if m.writeErr != nil && (m.failWritePage < 0 || m.failWritePage == page) {
 		return nil, m.writeErr
 	}
 	if page >= len(m.pages) || len(data) < ntagBlockSize {
@@ -190,12 +200,64 @@ func TestNTAGTag_WriteNDEF_LeavesExistingCapabilityContainer(t *testing.T) {
 // be corrected.
 func TestNTAGTag_WriteNDEF_LeavesBlankContainerOnUnknownSize(t *testing.T) {
 	t.Parallel()
-	device, transport := newMemoryNTAGDevice(t, 20)
+
+	t.Run("tag too small to be an NTAG21x", func(t *testing.T) {
+		t.Parallel()
+		device, transport := newMemoryNTAGDevice(t, 20)
+		tag := NewNTAGTag(device, ntagTestUID, 0)
+		tag.tagType = NTAGType213
+
+		require.NoError(t, tag.WriteNDEF(context.Background(), textMessage("hi")))
+
+		assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, transport.container())
+		assert.False(t, transport.wrotePage(ntagPageCC))
+	})
+
+	// The NTAG216's configuration page fails to read, as a passing RF fault
+	// would make it. Its page 131, where an NTAG215 keeps its configuration,
+	// reads fine and is blank user memory. Taking the failed read for the end
+	// of memory would mark this tag as an NTAG215 for good.
+	t.Run("larger variant's page fails to read", func(t *testing.T) {
+		t.Parallel()
+		device, transport := newMemoryNTAGDevice(t, ntag216TotalPages)
+		transport.failReadPage = ntag216Cfg0
+		tag := NewNTAGTag(device, ntagTestUID, 0)
+		tag.tagType = NTAGType216
+
+		require.NoError(t, tag.WriteNDEF(context.Background(), textMessage("hello")))
+
+		assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, transport.container())
+		assert.False(t, transport.wrotePage(ntagPageCC))
+	})
+
+	t.Run("configuration changed from delivery", func(t *testing.T) {
+		t.Parallel()
+		device, transport := newMemoryNTAGDevice(t, ntag215TotalPages)
+		transport.pages[ntag215Cfg0] = [ntagBlockSize]byte{0x04, 0x00, 0x00, 0x10}
+		tag := NewNTAGTag(device, ntagTestUID, 0)
+		tag.tagType = NTAGType215
+
+		require.NoError(t, tag.WriteNDEF(context.Background(), textMessage("hello")))
+
+		assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, transport.container())
+		assert.False(t, transport.wrotePage(ntagPageCC))
+	})
+}
+
+// The container cannot be undone, so it is only written once the message is
+// on the tag and verified. A write that fails part way must leave the tag
+// as it was found: not an NDEF tag.
+func TestNTAGTag_WriteNDEF_ContainerIsWrittenAfterTheData(t *testing.T) {
+	t.Parallel()
+	device, transport := newMemoryNTAGDevice(t, ntag215TotalPages)
+	transport.writeErr = errors.New("transport fault")
+	transport.failWritePage = 5
 	tag := NewNTAGTag(device, ntagTestUID, 0)
-	tag.tagType = NTAGType213
+	tag.tagType = NTAGType215
 
-	require.NoError(t, tag.WriteNDEF(context.Background(), textMessage("hi")))
+	err := tag.WriteNDEF(context.Background(), textMessage("hello"))
 
+	require.Error(t, err)
 	assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, transport.container())
 	assert.False(t, transport.wrotePage(ntagPageCC))
 }
@@ -204,6 +266,7 @@ func TestNTAGTag_WriteNDEF_CapabilityContainerWriteFailure(t *testing.T) {
 	t.Parallel()
 	device, transport := newMemoryNTAGDevice(t, ntag215TotalPages)
 	transport.writeErr = errors.New("transport fault")
+	transport.failWritePage = ntagPageCC
 	tag := NewNTAGTag(device, ntagTestUID, 0)
 	tag.tagType = NTAGType215
 
