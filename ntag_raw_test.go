@@ -342,10 +342,14 @@ func TestNTAGTagRawType2WriteNDEFAndVerify(t *testing.T) {
 		response := append([]byte{0x43, 0x00}, responseData...)
 		transport.QueueResponse(cmdInCommunicateThru, append(response, 0xAA, 0xBB))
 	}
+	// WriteNDEF reads the capability container last; this tag has one.
+	container := make([]byte, 16)
+	copy(container, []byte{0xE1, 0x10, 0x12, 0x00})
+	transport.QueueResponse(cmdInCommunicateThru, append([]byte{0x43, 0x00}, container...))
 
 	tag := NewNTAGTag(device, []byte{0x04, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}, 0)
 	tag.tagType = NTAGType213
 	require.NoError(t, tag.WriteNDEF(context.Background(), message))
-	assert.Equal(t, blocks*2, transport.GetCallCount(cmdInCommunicateThru))
+	assert.Equal(t, blocks*2+1, transport.GetCallCount(cmdInCommunicateThru))
 	assert.Zero(t, transport.GetCallCount(cmdInDataExchange))
 }

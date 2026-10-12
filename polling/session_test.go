@@ -2250,3 +2250,53 @@ func TestSession_Start_InitTimeoutBoundsStart(t *testing.T) {
 
 	require.NoError(t, session.Close())
 }
+
+// Cancelling the write context is how a caller gives up on a write. The wait
+// for a tag used to ignore it and run on to the timeout.
+func TestSession_WriteToNextTag_WriteCancelledWhileWaiting(t *testing.T) {
+	t.Parallel()
+
+	t.Run("CancelledDuringTheWait", func(t *testing.T) {
+		t.Parallel()
+		device, mockTransport := createMockDeviceWithTransport(t)
+		session := NewSession(device, nil)
+
+		mockTransport.SetResponse(0x4A, []byte{0x4B, 0x00}) // InListPassiveTarget with no tags
+
+		writeCtx, cancelWrite := context.WithCancel(context.Background())
+		defer cancelWrite()
+		time.AfterFunc(50*time.Millisecond, cancelWrite)
+
+		start := time.Now()
+		err := session.WriteToNextTag(
+			context.Background(), writeCtx, 30*time.Second,
+			func(_ context.Context, _ pn532.Tag) error {
+				t.Fatal("Write function should not be called")
+				return nil
+			})
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Less(t, time.Since(start), 5*time.Second, "the wait must end when the write is cancelled")
+		assert.False(t, session.isPaused.Load()) // Should be resumed after a cancelled wait
+	})
+
+	t.Run("CancelledBeforeTheWait", func(t *testing.T) {
+		t.Parallel()
+		device, mockTransport := createMockDeviceWithTransport(t)
+		session := NewSession(device, nil)
+
+		mockTransport.SetResponse(0x4A, []byte{0x4B, 0x00}) // InListPassiveTarget with no tags
+
+		writeCtx, cancelWrite := context.WithCancel(context.Background())
+		cancelWrite()
+
+		err := session.WriteToNextTag(
+			context.Background(), writeCtx, 30*time.Second,
+			func(_ context.Context, _ pn532.Tag) error {
+				t.Fatal("Write function should not be called")
+				return nil
+			})
+
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}

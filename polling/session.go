@@ -330,9 +330,14 @@ func (s *Session) WriteToNextTag(
 	}
 	defer s.Resume()
 
-	// Create a timeout context that cancels if either session or timeout expires
+	// Create a timeout context that cancels if the session ends, the timeout
+	// expires, or the write is cancelled. The write context has to end the
+	// wait too: it is what a caller cancels to give up on a write, and
+	// without this the wait carried on until a tag appeared or the timeout.
 	timeoutCtx, cancel := context.WithTimeout(sessionCtx, timeout)
 	defer cancel()
+	stopOnWriteCancel := context.AfterFunc(writeCtx, cancel)
+	defer stopOnWriteCancel()
 
 	// Poll continuously until we find a tag or timeout
 	ticker := time.NewTicker(s.config.PollInterval)
@@ -345,6 +350,10 @@ func (s *Session) WriteToNextTag(
 			return s.executeWriteToTag(writeCtx, detectedTag, writeFn)
 		}
 
+		if writeErr := writeCtx.Err(); writeErr != nil {
+			return writeErr
+		}
+
 		if !errors.Is(err, ErrNoTagInPoll) {
 			return fmt.Errorf("tag detection failed: %w", err)
 		}
@@ -354,12 +363,21 @@ func (s *Session) WriteToNextTag(
 		case <-ticker.C:
 			continue
 		case <-timeoutCtx.Done():
-			if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
-				return errors.New("timeout waiting for tag")
-			}
-			return timeoutCtx.Err()
+			return waitEndedError(timeoutCtx, writeCtx)
 		}
 	}
+}
+
+// waitEndedError says why the wait for a tag stopped: the write was
+// cancelled, the timeout expired, or the session ended.
+func waitEndedError(timeoutCtx, writeCtx context.Context) error {
+	if writeErr := writeCtx.Err(); writeErr != nil {
+		return writeErr
+	}
+	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		return errors.New("timeout waiting for tag")
+	}
+	return timeoutCtx.Err()
 }
 
 // WriteToTag performs a thread-safe write operation to a detected tag

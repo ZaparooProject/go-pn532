@@ -791,7 +791,103 @@ func (t *NTAGTag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 	}
 
 	// Verify write by reading back and comparing
-	return t.verifyWrittenData(ctx, data, userStart)
+	if err := t.verifyWrittenData(ctx, data, userStart); err != nil {
+		return err
+	}
+
+	// The container is written last: it cannot be undone, so a tag is only
+	// turned into an NDEF tag once it holds a complete, verified message.
+	return t.ensureCapabilityContainer(ctx)
+}
+
+// NTAG capability container: NDEF magic number, mapping version 1.0, the data
+// area size in 8-byte units, and read/write access.
+const (
+	ntagCCMagic   = 0xE1
+	ntagCCVersion = 0x10
+	ntagCCSize213 = 0x12
+	ntagCCSize215 = 0x3E
+	ntagCCSize216 = 0x6D
+)
+
+// ntagAuth0Default is the AUTH0 byte of the first configuration page as a tag
+// is delivered: password protection off.
+const ntagAuth0Default = 0xFF
+
+// ntagVariants maps each NTAG21x variant's first configuration page to its
+// capability container size, largest first.
+var ntagVariants = []struct {
+	cfg0Page uint8
+	ccSize   byte
+}{
+	{cfg0Page: ntag216Cfg0, ccSize: ntagCCSize216},
+	{cfg0Page: ntag215Cfg0, ccSize: ntagCCSize215},
+	{cfg0Page: ntag213Cfg0, ccSize: ntagCCSize213},
+}
+
+// capabilityContainerForWrite returns the tag's capability container, or nil
+// when it cannot be read. Type detection reads and caches it, and a write to
+// a tag of unknown type runs detection anyway, so that read is used when
+// there is one rather than reading the page again.
+func (t *NTAGTag) capabilityContainerForWrite(ctx context.Context) []byte {
+	if t.capabilityContainer == nil && t.tagType == NTAGTypeUnknown {
+		_ = t.DetectType(ctx)
+	}
+	if len(t.capabilityContainer) >= ntagBlockSize {
+		return t.capabilityContainer
+	}
+	cc, err := t.ReadBlock(ctx, ntagPageCC)
+	if err != nil {
+		// The write that follows reports a tag that has stopped answering.
+		Debugf("NTAG: could not read capability container before write: %v", err)
+		return nil
+	}
+	return cc
+}
+
+// ensureCapabilityContainer writes the capability container on a tag whose
+// container is blank.
+//
+// A tag without one is not an NDEF tag. Readers ignore what is written to it,
+// and so does ReadNDEF: without this, a blank tag written by WriteNDEF reads
+// back as empty.
+//
+// The container is one-time programmable, so only a blank one is written. A
+// tag with any other value there is left as it is, and so is a tag whose size
+// cannot be established, since a wrong size could never be corrected.
+//
+// The size has to be established by something the tag shows, not by a read
+// that failed: a larger variant's page failing to read can be a passing RF
+// fault, and taking it for the end of memory would mark the tag as a smaller
+// one for good. Each variant keeps its configuration pages at a different
+// address, and the first of them ends in the AUTH0 byte, which is FFh on a
+// tag as delivered. On any larger variant the same address is blank user
+// memory. A tag whose configuration has been changed, or one that has no such
+// page, is left alone. The detected type is not used either: with no
+// container to read it from, it is only an assumption.
+func (t *NTAGTag) ensureCapabilityContainer(ctx context.Context) error {
+	cc := t.capabilityContainerForWrite(ctx)
+	if len(cc) < ntagBlockSize || !bytes.Equal(cc[:ntagBlockSize], make([]byte, ntagBlockSize)) {
+		return nil
+	}
+
+	for _, variant := range ntagVariants {
+		cfg0, ok := t.probePage(ctx, variant.cfg0Page)
+		if !ok || cfg0[ntagBlockSize-1] != ntagAuth0Default {
+			continue
+		}
+		container := []byte{ntagCCMagic, ntagCCVersion, variant.ccSize, 0x00}
+		if err := t.WriteBlock(ctx, ntagPageCC, container); err != nil {
+			return fmt.Errorf("failed to write capability container: %w", err)
+		}
+		t.capabilityContainer = container
+		t.hasNDEF = true
+		Debugf("NTAG: wrote capability container % X to a blank tag", container)
+		return nil
+	}
+
+	Debugf("NTAG: capability container is blank and the tag size is unknown, leaving it")
+	return nil
 }
 
 func (t *NTAGTag) validateAndGetMemoryRange(ctx context.Context, data []byte) (userStart, userEnd uint8, err error) {
@@ -1325,10 +1421,16 @@ func (t *NTAGTag) ProbeActualMemorySize(ctx context.Context, claimedBytes int) (
 
 // canAccessPage tests if a specific page can be read
 func (t *NTAGTag) canAccessPage(ctx context.Context, page uint8) bool {
+	_, ok := t.probePage(ctx, page)
+	return ok
+}
+
+// probePage reads one page that may not exist on the tag, recovering the tag
+// if it does not. ok is false when the page could not be read.
+func (t *NTAGTag) probePage(ctx context.Context, page uint8) (data []byte, ok bool) {
 	if ctx.Err() != nil {
-		return false
+		return nil, false
 	}
-	var data []byte
 	var err error
 	if t.requiresRawType2Commands() {
 		data, err = t.readRawType2Pages(ctx, page, ntagBlockSize)
@@ -1340,9 +1442,12 @@ func (t *NTAGTag) canAccessPage(ctx context.Context, page uint8) bool {
 		if !t.requiresRawType2Commands() {
 			_ = t.device.InSelect(ctx)
 		}
-		return false
+		return nil, false
 	}
-	return len(data) >= 4
+	if len(data) < ntagBlockSize {
+		return nil, false
+	}
+	return data[:ntagBlockSize], true
 }
 
 // ReadCapabilityContainer reads the CC (page 3) and returns it
