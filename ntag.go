@@ -786,12 +786,93 @@ func (t *NTAGTag) WriteNDEF(ctx context.Context, message *NDEFMessage) error {
 		return err
 	}
 
+	if err := t.ensureCapabilityContainer(ctx); err != nil {
+		return err
+	}
+
 	if err := t.writeDataToBlocks(ctx, data, userStart, userEnd); err != nil {
 		return err
 	}
 
 	// Verify write by reading back and comparing
 	return t.verifyWrittenData(ctx, data, userStart)
+}
+
+// NTAG capability container: NDEF magic number, mapping version 1.0, the data
+// area size in 8-byte units, and read/write access.
+const (
+	ntagCCMagic   = 0xE1
+	ntagCCVersion = 0x10
+	ntagCCSize213 = 0x12
+	ntagCCSize215 = 0x3E
+	ntagCCSize216 = 0x6D
+)
+
+// ntagLastPages maps the last page of each NTAG21x variant to its capability
+// container size, largest first.
+var ntagLastPages = []struct {
+	lastPage uint8
+	ccSize   byte
+}{
+	{lastPage: ntag216TotalPages - 1, ccSize: ntagCCSize216},
+	{lastPage: ntag215TotalPages - 1, ccSize: ntagCCSize215},
+	{lastPage: ntag213TotalPages - 1, ccSize: ntagCCSize213},
+}
+
+// capabilityContainerForWrite returns the tag's capability container, or nil
+// when it cannot be read. Type detection reads and caches it, and a write to
+// a tag of unknown type runs detection anyway, so that read is used when
+// there is one rather than reading the page again.
+func (t *NTAGTag) capabilityContainerForWrite(ctx context.Context) []byte {
+	if t.capabilityContainer == nil && t.tagType == NTAGTypeUnknown {
+		_ = t.DetectType(ctx)
+	}
+	if len(t.capabilityContainer) >= ntagBlockSize {
+		return t.capabilityContainer
+	}
+	cc, err := t.ReadBlock(ctx, ntagPageCC)
+	if err != nil {
+		// The write that follows reports a tag that has stopped answering.
+		Debugf("NTAG: could not read capability container before write: %v", err)
+		return nil
+	}
+	return cc
+}
+
+// ensureCapabilityContainer writes the capability container on a tag whose
+// container is blank.
+//
+// A tag without one is not an NDEF tag. Readers ignore what is written to it,
+// and so does ReadNDEF: without this, a blank tag written by WriteNDEF reads
+// back as empty.
+//
+// The container is one-time programmable, so only a blank one is written. A
+// tag with any other value there is left as it is, and so is a tag whose size
+// cannot be established, since a wrong size could never be corrected.
+func (t *NTAGTag) ensureCapabilityContainer(ctx context.Context) error {
+	cc := t.capabilityContainerForWrite(ctx)
+	if len(cc) < ntagBlockSize || !bytes.Equal(cc[:ntagBlockSize], make([]byte, ntagBlockSize)) {
+		return nil
+	}
+
+	// The size is taken from the tag's real last page. The detected type is
+	// not used: with no container to read it from, it is only an assumption.
+	for _, variant := range ntagLastPages {
+		if !t.canAccessPage(ctx, variant.lastPage) {
+			continue
+		}
+		container := []byte{ntagCCMagic, ntagCCVersion, variant.ccSize, 0x00}
+		if err := t.WriteBlock(ctx, ntagPageCC, container); err != nil {
+			return fmt.Errorf("failed to write capability container: %w", err)
+		}
+		t.capabilityContainer = container
+		t.hasNDEF = true
+		Debugf("NTAG: wrote capability container % X to a blank tag", container)
+		return nil
+	}
+
+	Debugf("NTAG: capability container is blank and the tag size is unknown, leaving it")
+	return nil
 }
 
 func (t *NTAGTag) validateAndGetMemoryRange(ctx context.Context, data []byte) (userStart, userEnd uint8, err error) {

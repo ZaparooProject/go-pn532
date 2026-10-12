@@ -55,8 +55,10 @@ func TestNTAGTag_WriteNDEFContext_Cancellation(t *testing.T) {
 				// Block 7: 74 FE 00 00
 				writeSuccess := []byte{0x41, 0x00}
 
-				// Queue 4 write responses + 4 read responses for verification
+				// Queue the capability container read, then 4 write responses
+				// and 4 read responses for verification
 				mock.QueueResponses(0x40,
+					[]byte{0x41, 0x00, 0xE1, 0x10, 0x12, 0x00}, // read capability container
 					writeSuccess, writeSuccess, writeSuccess, writeSuccess, // 4 writes
 					[]byte{0x41, 0x00, 0x03, 0x0B, 0xD1, 0x01}, // read block 4
 					[]byte{0x41, 0x00, 0x07, 0x54, 0x02, 0x65}, // read block 5
