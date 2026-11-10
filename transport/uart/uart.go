@@ -140,7 +140,8 @@ func New(portName string) (*Transport, error) {
 // OS device node. portName identifies the port in errors and traces.
 //
 // The transport applies the PN532 UART mode and read timeout to port, takes
-// ownership of it and closes it on Close. Reconnect closes port and opens a
+// ownership of it and closes it on Close. If setup fails, port is closed
+// before the error is returned. Reconnect closes port and opens a
 // new one through reopen; with a nil reopen, Reconnect returns ErrNoReopen.
 func NewFromPort(port serial.Port, portName string, reopen PortOpener) (*Transport, error) {
 	if port == nil {
