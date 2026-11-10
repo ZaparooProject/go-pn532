@@ -53,8 +53,11 @@ var (
 
 // Transport implements the pn532.Transport interface for UART communication.
 type Transport struct {
-	port                  serial.Port
-	currentTrace          *pn532.TraceBuffer
+	port         serial.Port
+	currentTrace *pn532.TraceBuffer
+	// reopen opens the port again for Reconnect. It is nil for a transport
+	// made by New, which reopens through openSerialPort.
+	reopen                PortOpener
 	portName              string
 	mu                    syncutil.Mutex
 	closeMu               syncutil.Mutex // Protects port close operations
@@ -62,8 +65,19 @@ type Transport struct {
 	lastCommand           byte
 	connectionEstablished bool
 	disconnected          bool // Set when device-gone is detected during I/O
-	profile               deviceProfile
+	// noReopen marks a transport made by NewFromPort without a reopen
+	// function, which cannot reconnect.
+	noReopen bool
+	profile  deviceProfile
 }
+
+// PortOpener opens the named serial port in the given mode. Its signature
+// matches serial.Open.
+type PortOpener func(portName string, mode *serial.Mode) (serial.Port, error)
+
+// ErrNoReopen is returned by Reconnect on a transport made by NewFromPort
+// without a reopen function.
+var ErrNoReopen = errors.New("UART transport has no way to reopen its port")
 
 // isWindows returns true if running on Windows
 func isWindows() bool {
@@ -121,6 +135,38 @@ func New(portName string) (*Transport, error) {
 	}, nil
 }
 
+// NewFromPort creates a UART transport over a serial port the caller has
+// already opened, such as one served by a userspace USB driver rather than an
+// OS device node. portName identifies the port in errors and traces.
+//
+// The transport applies the PN532 UART mode and read timeout to port, takes
+// ownership of it and closes it on Close. If setup fails, port is closed
+// before the error is returned. Reconnect closes port and opens a
+// new one through reopen; with a nil reopen, Reconnect returns ErrNoReopen.
+func NewFromPort(port serial.Port, portName string, reopen PortOpener) (*Transport, error) {
+	if port == nil {
+		return nil, fmt.Errorf("UART port %s: no port given", portName)
+	}
+	profile := resolveDeviceProfile(portName)
+	if err := port.SetMode(serialMode(profile)); err != nil {
+		_ = port.Close()
+		return nil, fmt.Errorf("failed to set UART mode on %s: %w", portName, err)
+	}
+	timeout, err := applyReadTimeout(port)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Transport{
+		port:           port,
+		portName:       portName,
+		currentTimeout: timeout,
+		profile:        profile,
+		reopen:         reopen,
+		noReopen:       reopen == nil,
+	}, nil
+}
+
 // serialMode builds the UART mode for the selected device profile.
 func serialMode(profile deviceProfile) *serial.Mode {
 	mode := &serial.Mode{
@@ -137,19 +183,34 @@ func serialMode(profile deviceProfile) *serial.Mode {
 
 // openPort opens a serial device and applies the shared UART read timeout.
 func openPort(portName string, profile deviceProfile) (serial.Port, time.Duration, error) {
-	port, err := openSerialPort(portName, serialMode(profile))
+	return openPortWith(openSerialPort, portName, profile)
+}
+
+// openPortWith opens a serial device through open and applies the shared UART
+// read timeout.
+func openPortWith(open PortOpener, portName string, profile deviceProfile) (serial.Port, time.Duration, error) {
+	port, err := open(portName, serialMode(profile))
 	if err != nil {
 		return nil, 0, err
 	}
+	timeout, err := applyReadTimeout(port)
+	if err != nil {
+		return nil, 0, err
+	}
+	return port, timeout, nil
+}
 
+// applyReadTimeout sets the shared UART read timeout on port, closing it on
+// failure.
+func applyReadTimeout(port serial.Port) (time.Duration, error) {
 	// Set unified read timeout - originally 50ms on Linux/Mac and 100ms on Windows,
 	// but unified to 100ms on all platforms to resolve Linux USB-UART reliability issues
 	timeout := getReadTimeout()
 	if err := port.SetReadTimeout(timeout); err != nil {
 		_ = port.Close()
-		return nil, 0, fmt.Errorf("failed to set UART read timeout: %w", err)
+		return 0, fmt.Errorf("failed to set UART read timeout: %w", err)
 	}
-	return port, timeout, nil
+	return timeout, nil
 }
 
 // sleepCtx performs a context-aware sleep. Returns ctx.Err() if context is cancelled.
@@ -369,6 +430,10 @@ func (t *Transport) Reconnect() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if t.noReopen {
+		return fmt.Errorf("reconnect failed: %w", ErrNoReopen)
+	}
+
 	// Close existing port if open
 	if t.port != nil {
 		_ = t.port.Close()
@@ -379,7 +444,11 @@ func (t *Transport) Reconnect() error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Reopen with same settings
-	port, timeout, err := openPort(t.portName, t.profile)
+	open := t.reopen
+	if open == nil {
+		open = openSerialPort
+	}
+	port, timeout, err := openPortWith(open, t.portName, t.profile)
 	if err != nil {
 		return fmt.Errorf("reconnect failed: %w", err)
 	}
