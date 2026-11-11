@@ -1686,6 +1686,124 @@ func TestSession_SleepDetection_DeviceUpdatedAfterRecovery(t *testing.T) {
 	assert.Equal(t, newDevice, session.GetDevice(), "Device should be updated to new device")
 }
 
+// TestSession_SleepDetection_StalledCycleNotSleep tests that a polling cycle
+// which stalls for longer than the sleep threshold does not make the next
+// cycle report a sleep. Only the idle gap between cycles counts.
+func TestSession_SleepDetection_StalledCycleNotSleep(t *testing.T) {
+	t.Parallel()
+	device, mockTransport := createMockDeviceWithTransport(t)
+
+	config := &Config{
+		PollInterval: 10 * time.Millisecond,
+		SleepRecovery: SleepRecoveryConfig{
+			Enabled:                    true,
+			TimeDiscontinuityThreshold: 50 * time.Millisecond,
+			MaxRecoveryAttempts:        1,
+			RecoveryBackoff:            10 * time.Millisecond,
+		},
+	}
+
+	session := NewSession(device, config)
+
+	var sleepDetected atomic.Bool
+	session.SetOnSleepDetected(func() {
+		sleepDetected.Store(true)
+	})
+
+	// A wedged chip: polling stalls and fails, and SAMConfiguration fails, so
+	// a false sleep detection would end the session with "sleep recovery failed".
+	mockTransport.SetError(0x4A, errors.New("poll timed out"))
+	mockTransport.SetError(0x14, errors.New("no ACK"))
+	mockTransport.SetDelay(150 * time.Millisecond)
+
+	// The previous cycle finished just now.
+	session.lastPollTime = time.Now().Round(0)
+
+	ctx := context.Background()
+	start := time.Now()
+	require.NoError(t, session.executeSinglePollingCycle(ctx))
+	require.Greater(t, time.Since(start), config.PollInterval+config.SleepRecovery.TimeDiscontinuityThreshold,
+		"first cycle must stall past the sleep threshold for this test to be meaningful")
+
+	mockTransport.SetDelay(0)
+	mockTransport.ClearError(0x4A)
+	mockTransport.SetResponse(0x4A, []byte{0x4B, 0x00}) // No tag
+
+	err := session.executeSinglePollingCycle(ctx)
+
+	require.NoError(t, err, "a stalled cycle must not trigger sleep recovery")
+	assert.False(t, sleepDetected.Load(), "OnSleepDetected must not be called after a stalled cycle")
+	assert.Equal(t, 0, mockTransport.GetCallCount(0x14), "SAMConfiguration must not be sent")
+}
+
+// TestSession_SleepDetection_IdleGapTriggersRecovery tests that an idle gap
+// between cycles larger than the threshold triggers sleep recovery.
+func TestSession_SleepDetection_IdleGapTriggersRecovery(t *testing.T) {
+	t.Parallel()
+	device, mockTransport := createMockDeviceWithTransport(t)
+
+	config := &Config{
+		PollInterval: 10 * time.Millisecond,
+		SleepRecovery: SleepRecoveryConfig{
+			Enabled:                    true,
+			TimeDiscontinuityThreshold: 50 * time.Millisecond,
+			MaxRecoveryAttempts:        1,
+			RecoveryBackoff:            10 * time.Millisecond,
+		},
+	}
+
+	session := NewSession(device, config)
+
+	var sleepDetected atomic.Bool
+	session.SetOnSleepDetected(func() {
+		sleepDetected.Store(true)
+	})
+
+	mockTransport.SetResponse(0x4A, []byte{0x4B, 0x00}) // No tag
+	mockTransport.SetResponse(0x14, []byte{0x15})       // SAMConfiguration success
+
+	ctx := context.Background()
+	require.NoError(t, session.executeSinglePollingCycle(ctx))
+	require.False(t, sleepDetected.Load(), "first cycle has no previous cycle to compare against")
+
+	// The previous cycle finished well before the threshold.
+	session.lastPollTime = time.Now().Round(0).Add(-500 * time.Millisecond)
+
+	require.NoError(t, session.executeSinglePollingCycle(ctx))
+	assert.True(t, sleepDetected.Load(), "OnSleepDetected should be called after a long idle gap")
+	assert.Equal(t, 1, mockTransport.GetCallCount(0x14), "SAMConfiguration should be sent once by recovery")
+}
+
+// TestSession_SleepDetection_ClockBackwardsNotSleep tests that a wall clock
+// set backwards between cycles is not treated as a sleep.
+func TestSession_SleepDetection_ClockBackwardsNotSleep(t *testing.T) {
+	t.Parallel()
+	device, mockTransport := createMockDeviceWithTransport(t)
+
+	config := &Config{
+		PollInterval: 10 * time.Millisecond,
+		SleepRecovery: SleepRecoveryConfig{
+			Enabled:                    true,
+			TimeDiscontinuityThreshold: 50 * time.Millisecond,
+		},
+	}
+
+	session := NewSession(device, config)
+
+	var sleepDetected atomic.Bool
+	session.SetOnSleepDetected(func() {
+		sleepDetected.Store(true)
+	})
+
+	mockTransport.SetResponse(0x4A, []byte{0x4B, 0x00}) // No tag
+
+	// The previous cycle appears to have finished in the future.
+	session.lastPollTime = time.Now().Round(0).Add(time.Hour)
+
+	require.NoError(t, session.executeSinglePollingCycle(context.Background()))
+	assert.False(t, sleepDetected.Load(), "a backwards clock jump must not be treated as sleep")
+}
+
 // TestSleepRecoveryConfig_DetectSleep tests the DetectSleep helper
 func TestSleepRecoveryConfig_DetectSleep(t *testing.T) {
 	t.Parallel()

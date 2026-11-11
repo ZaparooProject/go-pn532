@@ -507,6 +507,11 @@ func (s *Session) runPollingLoop(ctx context.Context, cycleFunc func(context.Con
 
 // executeSinglePollingCycle performs one polling cycle and processes results
 func (s *Session) executeSinglePollingCycle(ctx context.Context) error {
+	// Stamp the end of every cycle, including error paths, so the next sleep
+	// check measures only the idle gap between cycles. A cycle that stalls in
+	// hardware recovery must not look like a system sleep.
+	defer s.markCycleEnd()
+
 	// Check for time discontinuity (sleep detection)
 	if err := s.checkSleepAndRecover(ctx); err != nil {
 		return err // Recovery failed - exit polling loop
@@ -602,30 +607,32 @@ func (s *Session) attemptHardReset(ctx context.Context) bool {
 	return true
 }
 
+// markCycleEnd records when the current polling cycle finished. The time is
+// stored without a monotonic reading so the next comparison uses the wall
+// clock, which keeps advancing while the system is suspended.
+func (s *Session) markCycleEnd() {
+	s.lastPollTime = time.Now().Round(0)
+}
+
 // checkSleepAndRecover detects time discontinuity (system sleep) and attempts recovery
 func (s *Session) checkSleepAndRecover(ctx context.Context) error {
 	cfg := s.config.SleepRecovery
 	if !cfg.Enabled {
-		s.lastPollTime = time.Now()
 		return nil
 	}
-
-	if err := s.handleTimeDiscontinuity(ctx, cfg); err != nil {
-		return err
-	}
-
-	s.lastPollTime = time.Now()
-	return nil
+	return s.handleTimeDiscontinuity(ctx, cfg)
 }
 
-// handleTimeDiscontinuity checks for and handles time discontinuity (sleep detection)
+// handleTimeDiscontinuity checks for and handles time discontinuity (sleep detection).
+// The gap is the wall-clock time since the previous cycle finished. A negative
+// gap means the clock was set backwards and is never treated as a sleep.
 func (s *Session) handleTimeDiscontinuity(ctx context.Context, cfg SleepRecoveryConfig) error {
 	if s.lastPollTime.IsZero() {
 		return nil
 	}
 
-	elapsed := time.Since(s.lastPollTime)
-	if !cfg.DetectSleep(elapsed, s.config.PollInterval) {
+	gap := time.Now().Round(0).Sub(s.lastPollTime)
+	if gap < 0 || !cfg.DetectSleep(gap, s.config.PollInterval) {
 		return nil
 	}
 
