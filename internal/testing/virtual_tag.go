@@ -85,6 +85,19 @@ func NewVirtualFudanClone(uid []byte) *VirtualTag {
 	return tag
 }
 
+// TagTypeFeliCa is the VirtualTag type of a FeliCa card.
+const TagTypeFeliCa = "FeliCa"
+
+// NewVirtualFeliCa creates a virtual FeliCa card with the given 8-byte IDm.
+// It answers FeliCa polling only.
+func NewVirtualFeliCa(idm []byte) *VirtualTag {
+	return &VirtualTag{
+		Type:    TagTypeFeliCa,
+		UID:     idm,
+		Present: true,
+	}
+}
+
 // NewVirtualMIFARE1K creates a virtual MIFARE Classic 1K tag
 func NewVirtualMIFARE1K(uid []byte) *VirtualTag {
 	if uid == nil {

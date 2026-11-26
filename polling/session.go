@@ -51,11 +51,14 @@ type Session struct {
 	OnCardChanged        func(ctx context.Context, tag *pn532.DetectedTag) error
 	OnCardDetected       func(ctx context.Context, tag *pn532.DetectedTag) error
 	OnCardRemoved        func()
+	OnFeliCaUnavailable  func(err error)
 	state                CardState
 	stateMutex           syncutil.RWMutex
 	writeMutex           syncutil.Mutex
+	feliCaFailures       atomic.Int32
 	closed               atomic.Bool
 	isPaused             atomic.Bool
+	feliCaOff            atomic.Bool
 }
 
 // NewSession creates a new card monitoring session.
@@ -159,6 +162,15 @@ func (s *Session) SetOnDeviceDisconnected(callback func(err error)) {
 	s.stateMutex.Lock()
 	defer s.stateMutex.Unlock()
 	s.OnDeviceDisconnected = callback
+}
+
+// SetOnFeliCaUnavailable sets the callback for when the session stops
+// polling for FeliCa because the reader keeps failing the FeliCa poll. It is
+// called at most once per session, with the last error.
+func (s *Session) SetOnFeliCaUnavailable(callback func(err error)) {
+	s.stateMutex.Lock()
+	defer s.stateMutex.Unlock()
+	s.OnFeliCaUnavailable = callback
 }
 
 // SetRecoverer configures a custom device recoverer for sleep/wake handling.
@@ -464,7 +476,7 @@ func (s *Session) configureInitialHardware(ctx context.Context) error {
 	initCtx, cancel := context.WithTimeout(ctx, startInitTimeout)
 	defer cancel()
 
-	if err := s.device.SetPollingRetries(initCtx, s.config.HardwareTimeoutRetries); err != nil {
+	if err := s.setPollingRetries(initCtx); err != nil {
 		return fmt.Errorf("failed to configure hardware polling retries: %w", err)
 	}
 
@@ -475,6 +487,30 @@ func (s *Session) configureInitialHardware(ctx context.Context) error {
 		return fmt.Errorf("failed to set device timeout: %w", err)
 	}
 	return nil
+}
+
+// setPollingRetries sends the session's retry configuration. With FeliCa on,
+// target activation is finite so the ISO14443A poll returns when no tag is
+// present and the FeliCa poll can run after it.
+func (s *Session) setPollingRetries(ctx context.Context) error {
+	if !s.config.FeliCa {
+		//nolint:wrapcheck // wrapped by the caller
+		return s.device.SetPollingRetries(ctx, s.config.HardwareTimeoutRetries)
+	}
+	//nolint:wrapcheck // wrapped by the caller
+	return s.device.SetPollingRetriesWithActivation(ctx, s.config.HardwareTimeoutRetries, feliCaActivationRetries)
+}
+
+// restoreFeliCaRetries sends the FeliCa retry configuration again after the
+// PN532 was reset or replaced, which puts activation back to 0xFF. Without
+// it, the ISO14443A poll would wait for a tag and the FeliCa poll never run.
+func (s *Session) restoreFeliCaRetries(ctx context.Context) {
+	if !s.config.FeliCa {
+		return
+	}
+	if err := s.setPollingRetries(ctx); err != nil {
+		pn532.Debugf("restoring FeliCa polling retries failed: %v", err)
+	}
 }
 
 // runPollingLoop is the generic polling loop used by both single and multi-tag modes
@@ -598,6 +634,8 @@ func (s *Session) attemptHardReset(ctx context.Context) bool {
 	s.state.TransitionToIdle()
 	s.stateMutex.Unlock()
 
+	s.restoreFeliCaRetries(ctx)
+
 	pn532.Debugln("attemptHardReset: recovery successful, resuming polling")
 	return true
 }
@@ -660,6 +698,7 @@ func (s *Session) attemptSleepRecovery(ctx context.Context, recoverer DeviceReco
 		}
 		s.stateMutex.Unlock()
 	}
+	s.restoreFeliCaRetries(ctx)
 	return nil
 }
 
@@ -717,12 +756,55 @@ func (s *Session) performSinglePoll(ctx context.Context) (*pn532.DetectedTag, er
 		return nil, fmt.Errorf("tag detection failed: %w", err)
 	}
 
+	if tag == nil && s.config.FeliCa && !s.feliCaOff.Load() {
+		tag = s.pollFeliCa(ctx)
+	}
+
 	// Check if a tag was found
 	if tag == nil {
 		return nil, ErrNoTagInPoll // No tag detected, but not an error
 	}
 
 	return tag, nil
+}
+
+const (
+	// feliCaActivationRetries is MxRtyPassiveActivation with FeliCa on. It
+	// is the count libnfc uses when it does not wait for a tag.
+	feliCaActivationRetries byte = 0x02
+
+	// maxFeliCaFailures is how many FeliCa polls in a row may fail before
+	// the session stops sending them.
+	maxFeliCaFailures = 3
+)
+
+// pollFeliCa runs the FeliCa poll. A failure is reported as no tag: the
+// ISO14443A poll goes on as before, and it is what notices a reader that
+// stopped answering. A reader that keeps failing the FeliCa poll, such as
+// one that does not support it, has it turned off for the session.
+func (s *Session) pollFeliCa(ctx context.Context) *pn532.DetectedTag {
+	tag, err := s.device.InListPassiveFeliCaTarget(ctx)
+	if err == nil {
+		s.feliCaFailures.Store(0)
+		return tag
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	failures := s.feliCaFailures.Add(1)
+	pn532.Debugf("FeliCa poll failed (%d in a row): %v", failures, err)
+	if failures < maxFeliCaFailures || !s.feliCaOff.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	s.stateMutex.RLock()
+	onUnavailable := s.OnFeliCaUnavailable
+	s.stateMutex.RUnlock()
+	if onUnavailable != nil {
+		onUnavailable(err)
+	}
+	return nil
 }
 
 // handlePollingError handles errors from polling operations
