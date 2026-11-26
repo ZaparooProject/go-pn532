@@ -59,6 +59,7 @@ type Session struct {
 	closed               atomic.Bool
 	isPaused             atomic.Bool
 	feliCaOff            atomic.Bool
+	feliCaRetriesPending atomic.Bool
 }
 
 // NewSession creates a new card monitoring session.
@@ -78,6 +79,9 @@ func NewSession(device *pn532.Device, config *Config) *Session {
 		resumeChan: make(chan struct{}, 1),
 		ackChan:    make(chan struct{}, 1),
 	}
+	// Until the FeliCa retry configuration reaches the PN532, the first poll
+	// sends it. Start sends it up front; WriteToNextTag may poll first.
+	session.feliCaRetriesPending.Store(config.FeliCa)
 
 	// Auto-create recoverer when sleep recovery is enabled
 	if config.SleepRecovery.Enabled {
@@ -479,6 +483,7 @@ func (s *Session) configureInitialHardware(ctx context.Context) error {
 	if err := s.setPollingRetries(initCtx); err != nil {
 		return fmt.Errorf("failed to configure hardware polling retries: %w", err)
 	}
+	s.feliCaRetriesPending.Store(false)
 
 	// Set device timeout to match hardware retries plus buffer.
 	// Each retry is ~150ms, plus 1s buffer for host/driver overhead.
@@ -504,13 +509,19 @@ func (s *Session) setPollingRetries(ctx context.Context) error {
 // restoreFeliCaRetries sends the FeliCa retry configuration again after the
 // PN532 was reset or replaced, which puts activation back to 0xFF. Without
 // it, the ISO14443A poll would wait for a tag and the FeliCa poll never run.
+// A failed send is retried before each poll until it succeeds or FeliCa is
+// turned off. A session that has not sent it yet sends it the same way.
 func (s *Session) restoreFeliCaRetries(ctx context.Context) {
-	if !s.config.FeliCa {
+	if !s.config.FeliCa || s.feliCaOff.Load() {
 		return
 	}
 	if err := s.setPollingRetries(ctx); err != nil {
 		pn532.Debugf("restoring FeliCa polling retries failed: %v", err)
+		s.feliCaRetriesPending.Store(true)
+		s.recordFeliCaFailure(err)
+		return
 	}
+	s.feliCaRetriesPending.Store(false)
 }
 
 // runPollingLoop is the generic polling loop used by both single and multi-tag modes
@@ -751,12 +762,15 @@ func (s *Session) waitForResume(ctx context.Context) error {
 func (s *Session) performSinglePoll(ctx context.Context) (*pn532.DetectedTag, error) {
 	// Use standard InListPassiveTarget with PN532 hardware handling retries
 	// The hardware retry count was configured via SetPollingRetries() during session start
+	if s.feliCaRetriesPending.Load() {
+		s.restoreFeliCaRetries(ctx)
+	}
 	tag, err := s.device.InListPassiveTarget(ctx, 0x00)
 	if err != nil {
 		return nil, fmt.Errorf("tag detection failed: %w", err)
 	}
 
-	if tag == nil && s.config.FeliCa && !s.feliCaOff.Load() {
+	if tag == nil && s.config.FeliCa && !s.feliCaOff.Load() && !s.feliCaRetriesPending.Load() {
 		tag = s.pollFeliCa(ctx)
 	}
 
@@ -791,11 +805,17 @@ func (s *Session) pollFeliCa(ctx context.Context) *pn532.DetectedTag {
 	if ctx.Err() != nil {
 		return nil
 	}
+	s.recordFeliCaFailure(err)
+	return nil
+}
 
+// recordFeliCaFailure counts a failed FeliCa poll or retry configuration and
+// turns FeliCa off for the session after maxFeliCaFailures in a row.
+func (s *Session) recordFeliCaFailure(err error) {
 	failures := s.feliCaFailures.Add(1)
-	pn532.Debugf("FeliCa poll failed (%d in a row): %v", failures, err)
+	pn532.Debugf("FeliCa failed (%d in a row): %v", failures, err)
 	if failures < maxFeliCaFailures || !s.feliCaOff.CompareAndSwap(false, true) {
-		return nil
+		return
 	}
 
 	s.stateMutex.RLock()
@@ -804,7 +824,6 @@ func (s *Session) pollFeliCa(ctx context.Context) *pn532.DetectedTag {
 	if onUnavailable != nil {
 		onUnavailable(err)
 	}
-	return nil
 }
 
 // handlePollingError handles errors from polling operations

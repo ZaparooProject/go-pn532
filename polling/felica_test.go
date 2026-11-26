@@ -43,6 +43,7 @@ type sentCommand struct {
 type recordingTransport struct {
 	pn532.Transport
 	feliCaErr error
+	rfErr     error
 	sent      []sentCommand
 	mu        syncutil.Mutex
 }
@@ -51,13 +52,24 @@ func (r *recordingTransport) SendCommand(ctx context.Context, cmd byte, data []b
 	r.mu.Lock()
 	r.sent = append(r.sent, sentCommand{cmd: cmd, data: append([]byte(nil), data...)})
 	feliCaErr := r.feliCaErr
+	rfErr := r.rfErr
 	r.mu.Unlock()
+
+	if cmd == cmdRFConfiguration && rfErr != nil {
+		return nil, rfErr
+	}
 
 	if cmd == cmdInListPassiveTarget && len(data) > 1 && data[1] == 0x01 && feliCaErr != nil {
 		return nil, feliCaErr
 	}
 	//nolint:wrapcheck // test passthrough
 	return r.Transport.SendCommand(ctx, cmd, data)
+}
+
+func (r *recordingTransport) setRFErr(err error) {
+	r.mu.Lock()
+	r.rfErr = err
+	r.mu.Unlock()
 }
 
 func (r *recordingTransport) commands(cmd byte) [][]byte {
@@ -230,4 +242,73 @@ func TestSession_FeliCaOn_ReaderRejectsFeliCa(t *testing.T) {
 	require.NotNil(t, lastErr.Load())
 	require.ErrorIs(t, *lastErr.Load(), pn532.ErrCommandNotSupported)
 	assert.Equal(t, maxFeliCaFailures, feliCaPolls())
+}
+
+func TestSession_FeliCaOn_FailedRetryRestoreIsResent(t *testing.T) {
+	t.Parallel()
+	device, rec := newMockDevice(t)
+	session := NewSession(device, feliCaTestConfig(true))
+	ctx := context.Background()
+
+	rec.setRFErr(pn532.ErrNoACK)
+	session.restoreFeliCaRetries(ctx)
+	assert.True(t, session.feliCaRetriesPending.Load())
+
+	rec.setRFErr(nil)
+	_, err := session.performSinglePoll(ctx)
+	require.ErrorIs(t, err, ErrNoTagInPoll)
+	assert.False(t, session.feliCaRetriesPending.Load())
+	assert.False(t, session.feliCaOff.Load())
+
+	rf := rec.commands(cmdRFConfiguration)
+	require.NotEmpty(t, rf)
+	last := rf[len(rf)-1]
+	assert.Equal(t, feliCaActivationRetries, last[len(last)-1])
+}
+
+func TestSession_FeliCaOn_RetryRestoreKeepsFailing(t *testing.T) {
+	t.Parallel()
+	device, rec := newMockDevice(t)
+	session := NewSession(device, feliCaTestConfig(true))
+	ctx := context.Background()
+
+	var unavailable atomic.Int32
+	session.SetOnFeliCaUnavailable(func(error) { unavailable.Add(1) })
+
+	rec.setRFErr(pn532.ErrNoACK)
+	session.restoreFeliCaRetries(ctx)
+	for range maxFeliCaFailures + 2 {
+		_, err := session.performSinglePoll(ctx)
+		require.ErrorIs(t, err, ErrNoTagInPoll)
+	}
+
+	assert.True(t, session.feliCaOff.Load())
+	assert.Equal(t, int32(1), unavailable.Load())
+	assert.Len(t, rec.commands(cmdRFConfiguration), maxFeliCaFailures)
+}
+
+func TestSession_FeliCaOn_WriteWithoutStartSendsRetriesFirst(t *testing.T) {
+	t.Parallel()
+	device, rec := newMockDevice(t)
+	session := NewSession(device, feliCaTestConfig(true))
+
+	err := session.WriteToNextTag(context.Background(), context.Background(), 30*time.Millisecond,
+		func(context.Context, pn532.Tag) error { return nil })
+	require.Error(t, err)
+
+	rec.mu.Lock()
+	sent := append([]sentCommand(nil), rec.sent...)
+	rec.mu.Unlock()
+	require.NotEmpty(t, sent)
+	assert.Equal(t, cmdRFConfiguration, sent[0].cmd)
+	assert.Equal(t, feliCaActivationRetries, sent[0].data[len(sent[0].data)-1])
+	assert.False(t, session.feliCaRetriesPending.Load())
+
+	feliCaPolls := 0
+	for _, data := range rec.commands(cmdInListPassiveTarget) {
+		if data[1] == 0x01 {
+			feliCaPolls++
+		}
+	}
+	assert.Positive(t, feliCaPolls)
 }

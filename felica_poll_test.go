@@ -68,6 +68,13 @@ func TestParseFeliCaTargetResponse(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, tag)
 		assert.Equal(t, testIDm, tag.UIDBytes)
+		require.Len(t, tag.TargetData, 17)
+
+		felica, err := NewFeliCaTag(nil, tag.TargetData)
+		require.NoError(t, err)
+		assert.Equal(t, testIDm, felica.GetIDm())
+		assert.Equal(t, testPMm, felica.GetPMm())
+		assert.Equal(t, uint16(0xFFFF), felica.GetSystemCode())
 	})
 
 	t.Run("truncated", func(t *testing.T) {

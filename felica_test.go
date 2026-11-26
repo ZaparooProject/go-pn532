@@ -116,6 +116,13 @@ func getNewFeliCaTagTestCases() []newFeliCaTagTestCase {
 			expectedSysCode: 0xFFFF, // Default wildcard when no system code in response
 		},
 		{
+			name:            "valid_polling_response_without_system_code",
+			targetData:      buildFeliCaPollingResponse(testFeliCaIDm, testFeliCaPMm, 0x12FC)[:17],
+			expectedIDm:     testFeliCaIDm,
+			expectedPMm:     testFeliCaPMm,
+			expectedSysCode: 0xFFFF,
+		},
+		{
 			name:          "target_data_too_short",
 			targetData:    []byte{0x01, 0x02, 0x03},
 			expectError:   true,

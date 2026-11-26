@@ -65,8 +65,8 @@ type FeliCaTag struct {
 // NewFeliCaTag creates a new FeliCa tag instance from polling response data
 // targetData should contain the FeliCa polling response (POL_RES)
 func NewFeliCaTag(device *Device, targetData []byte) (*FeliCaTag, error) {
-	if len(targetData) < 18 {
-		return nil, fmt.Errorf("FeliCa target data too short: %d bytes, need at least 18", len(targetData))
+	if len(targetData) < 17 {
+		return nil, fmt.Errorf("FeliCa target data too short: %d bytes, need at least 17", len(targetData))
 	}
 
 	// Parse FeliCa polling response structure:
