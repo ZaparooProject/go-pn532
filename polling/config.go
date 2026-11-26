@@ -62,6 +62,14 @@ type Config struct {
 	// 0x00 = immediate return, 0x01-0xFE = retry count (~150ms each), 0xFF = infinite
 	// Higher values reduce LED blinking frequency but increase detection latency
 	HardwareTimeoutRetries byte
+	// FeliCa adds a FeliCa poll to each cycle in which the ISO14443A poll
+	// finds no tag. It is off by default, and polling is then unchanged.
+	//
+	// When on, the PN532 is set to give up on a target type after a few
+	// activation attempts instead of waiting for a tag, so a cycle can poll
+	// both types. If the reader keeps failing the FeliCa poll, the session
+	// stops sending it and calls Session.OnFeliCaUnavailable.
+	FeliCa bool
 	// SleepRecovery configures automatic recovery after host sleep/wake cycles
 	SleepRecovery SleepRecoveryConfig
 }

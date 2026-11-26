@@ -845,8 +845,13 @@ func (v *VirtualPN532) handleInListPassiveTarget(params []byte) ([]byte, error) 
 
 // buildTargetData constructs TargetData for InListPassiveTarget response
 func (*VirtualPN532) buildTargetData(tg, brTy byte, tag *VirtualTag) []byte {
+	// A tag answers only the polling of its own technology.
+	isFeliCa := tag.Type == TagTypeFeliCa
 	switch brTy {
 	case 0x00: // 106 kbps Type A
+		if isFeliCa {
+			return nil
+		}
 		// Format: Tg + SENS_RES(2) + SEL_RES(1) + NFCIDLength(1) + NFCID1t
 		// Example from manual: 01 04 00 08 04 92 2E 58 32
 		sensRes := []byte{0x04, 0x00} // Default SENS_RES (ATQA)
@@ -874,7 +879,7 @@ func (*VirtualPN532) buildTargetData(tg, brTy byte, tag *VirtualTag) []byte {
 
 	case 0x01, 0x02: // 212/424 kbps FeliCa
 		// Format: Tg + POL_RES_length + 0x01 + NFCID2t(8) + Pad(8) + [SYST_CODE(2)]
-		if len(tag.UID) < 8 {
+		if !isFeliCa || len(tag.UID) < 8 {
 			return nil
 		}
 		data := make([]byte, 0, 3+8+8)

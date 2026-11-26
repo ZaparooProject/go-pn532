@@ -506,13 +506,26 @@ func (d *Device) SetPassiveActivationRetries(ctx context.Context, maxRetries byt
 //   - 0x20: ~4.8 seconds (32 retries)
 //   - 0xFF: Infinite retries (use with caution)
 func (d *Device) SetPollingRetries(ctx context.Context, mxRtyATR byte) error {
+	return d.SetPollingRetriesWithActivation(ctx, mxRtyATR, 0xFF)
+}
+
+// SetPollingRetriesWithActivation is SetPollingRetries with a chosen
+// MxRtyPassiveActivation, the number of times InListPassiveTarget tries to
+// activate a target before it returns with none (0xFF = until one answers).
+//
+// SetPollingRetries leaves it at 0xFF, so an InListPassiveTarget waits for a
+// tag. A finite count makes it return when no tag of that type is in the
+// field, which a caller needs to poll for more than one type in turn.
+func (d *Device) SetPollingRetriesWithActivation(
+	ctx context.Context, mxRtyATR, mxRtyPassiveActivation byte,
+) error {
 	// RF Configuration item 0x05 - MaxRetries
 	// Payload: [MxRtyATR, MxRtyPSL, MxRtyPassiveActivation]
 	configPayload := []byte{
-		0x05,     // CfgItem: MaxRetries
-		mxRtyATR, // MxRtyATR (retry count for passive target detection)
-		0x01,     // MxRtyPSL (default)
-		0xFF,     // MxRtyPassiveActivation (infinite)
+		0x05,                   // CfgItem: MaxRetries
+		mxRtyATR,               // MxRtyATR (retry count for passive target detection)
+		0x01,                   // MxRtyPSL (default)
+		mxRtyPassiveActivation, // MxRtyPassiveActivation
 	}
 
 	_, err := d.transport.SendCommand(ctx, cmdRFConfiguration, configPayload)
