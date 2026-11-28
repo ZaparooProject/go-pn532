@@ -262,6 +262,19 @@ func TestNTAGTag_WriteNDEF_ContainerIsWrittenAfterTheData(t *testing.T) {
 	assert.False(t, transport.wrotePage(ntagPageCC))
 }
 
+func TestNTAGTag_WriteNDEF_DetectsALargerTag(t *testing.T) {
+	t.Parallel()
+	device, transport := newMemoryNTAGDevice(t, ntag216TotalPages)
+	// An NTAG216's capability container: 0x6D * 8 = 872 bytes of NDEF memory.
+	transport.pages[ntagPageCC] = [ntagBlockSize]byte{0xE1, 0x10, 0x6D, 0x00}
+	tag := NewNTAGTag(device, ntagTestUID, 0)
+
+	err := tag.WriteNDEF(context.Background(), textMessage(string(make([]byte, 600))))
+
+	require.NoError(t, err)
+	assert.Equal(t, NTAGType216, tag.tagType)
+}
+
 func TestNTAGTag_WriteNDEF_DetectFailureIsNotTooLarge(t *testing.T) {
 	t.Parallel()
 	device, transport := newMemoryNTAGDevice(t, ntag216TotalPages)

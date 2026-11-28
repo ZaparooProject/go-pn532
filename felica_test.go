@@ -1005,3 +1005,16 @@ func TestFeliCaTag_RestoreSystemCodes(t *testing.T) {
 	assert.Equal(t, uint16(0xAAAA), tag.GetSystemCode())
 	assert.Equal(t, uint16(0xBBBB), tag.GetServiceCode())
 }
+
+func TestFeliCaTag_ProtocolSizeLimitsAreTooLarge(t *testing.T) {
+	t.Parallel()
+	tag := &FeliCaTag{}
+
+	err := tag.validateDataSize(make([]byte, 0x1000000), 0xFFFFFFFF)
+	require.ErrorIs(t, err, ErrDataTooLarge)
+	assert.Contains(t, err.Error(), "24-bit limit")
+
+	err = tag.writeNDEFBlocks(context.Background(), make([]byte, 0xFFFF*feliCaBlockSize))
+	require.ErrorIs(t, err, ErrDataTooLarge)
+	assert.Contains(t, err.Error(), "requires 65535 blocks")
+}
