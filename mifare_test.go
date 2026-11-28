@@ -914,6 +914,9 @@ func TestMIFARETag_WriteNDEF(t *testing.T) {
 			// Test WriteNDEF
 			err := tag.WriteNDEF(context.Background(), tt.message)
 			checkMIFARETagError(t, err, tt.expectError, tt.errorContains)
+			if tt.errorContains == "NDEF message too large" {
+				require.ErrorIs(t, err, ErrDataTooLarge)
+			}
 		})
 	}
 }

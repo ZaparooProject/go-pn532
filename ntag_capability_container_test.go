@@ -262,6 +262,32 @@ func TestNTAGTag_WriteNDEF_ContainerIsWrittenAfterTheData(t *testing.T) {
 	assert.False(t, transport.wrotePage(ntagPageCC))
 }
 
+func TestNTAGTag_WriteNDEF_DetectsALargerTag(t *testing.T) {
+	t.Parallel()
+	device, transport := newMemoryNTAGDevice(t, ntag216TotalPages)
+	// An NTAG216's capability container: 0x6D * 8 = 872 bytes of NDEF memory.
+	transport.pages[ntagPageCC] = [ntagBlockSize]byte{0xE1, 0x10, 0x6D, 0x00}
+	tag := NewNTAGTag(device, ntagTestUID, 0)
+
+	err := tag.WriteNDEF(context.Background(), textMessage(string(make([]byte, 600))))
+
+	require.NoError(t, err)
+	assert.Equal(t, NTAGType216, tag.tagType)
+}
+
+func TestNTAGTag_WriteNDEF_DetectFailureIsNotTooLarge(t *testing.T) {
+	t.Parallel()
+	device, transport := newMemoryNTAGDevice(t, ntag216TotalPages)
+	tag := NewNTAGTag(device, []byte{0x11, 0x22, 0x33, 0x44}, 0)
+
+	err := tag.WriteNDEF(context.Background(), textMessage(string(make([]byte, 600))))
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrDataTooLarge)
+	assert.Contains(t, err.Error(), "not an NTAG tag")
+	assert.False(t, transport.wrotePage(ntagPageCC))
+}
+
 func TestNTAGTag_WriteNDEF_CapabilityContainerWriteFailure(t *testing.T) {
 	t.Parallel()
 	device, transport := newMemoryNTAGDevice(t, ntag215TotalPages)
@@ -274,4 +300,20 @@ func TestNTAGTag_WriteNDEF_CapabilityContainerWriteFailure(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to write capability container")
+}
+
+// A message that does not fit is reported as ErrDataTooLarge, so callers can
+// tell the user the text is too big rather than that the write failed. Nothing
+// is written.
+func TestNTAGTag_WriteNDEF_TooLarge(t *testing.T) {
+	t.Parallel()
+	device, transport := newMemoryNTAGDevice(t, ntag215TotalPages)
+	tag := NewNTAGTag(device, ntagTestUID, 0)
+	tag.tagType = NTAGType215
+
+	err := tag.WriteNDEF(context.Background(), textMessage(string(make([]byte, 600))))
+
+	require.ErrorIs(t, err, ErrDataTooLarge)
+	assert.False(t, IsRetryable(err))
+	assert.False(t, transport.wrotePage(ntagPageCC))
 }

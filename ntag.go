@@ -899,15 +899,19 @@ func (t *NTAGTag) validateAndGetMemoryRange(ctx context.Context, data []byte) (u
 	}
 
 	// Try to detect tag type if not already known
+	// A failed detection must not be reported as a too-large message: the
+	// fallback range is the smallest NTAG's, not this tag's.
 	if t.tagType == NTAGTypeUnknown {
-		if err := t.DetectType(ctx); err == nil {
-			userStart, userEnd = t.GetUserMemoryRange()
-			maxBytes = int(userEnd-userStart+1) * ntagBlockSize
+		if err := t.DetectType(ctx); err != nil {
+			return 0, 0, err
 		}
+		userStart, userEnd = t.GetUserMemoryRange()
+		maxBytes = int(userEnd-userStart+1) * ntagBlockSize
 	}
 
 	if len(data) > maxBytes {
-		return 0, 0, fmt.Errorf("NDEF message too large: %d bytes, max %d bytes for tag type", len(data), maxBytes)
+		return 0, 0, fmt.Errorf("%w: NDEF message too large: %d bytes, max %d bytes for tag type",
+			ErrDataTooLarge, len(data), maxBytes)
 	}
 
 	return userStart, userEnd, nil

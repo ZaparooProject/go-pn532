@@ -606,11 +606,12 @@ func (*FeliCaTag) validateWritePermissions(aib []byte) error {
 // validateDataSize checks if NDEF data fits within tag capacity
 func (*FeliCaTag) validateDataSize(ndefData []byte, maxBytes uint32) error {
 	if len(ndefData) > int(maxBytes) {
-		return fmt.Errorf("NDEF message too large: %d bytes, max %d bytes", len(ndefData), maxBytes)
+		return fmt.Errorf("%w: NDEF message too large: %d bytes, max %d bytes",
+			ErrDataTooLarge, len(ndefData), maxBytes)
 	}
 
 	if len(ndefData) > 0xFFFFFF {
-		return fmt.Errorf("NDEF data too large: %d bytes exceeds 24-bit limit", len(ndefData))
+		return fmt.Errorf("%w: NDEF data too large: %d bytes exceeds 24-bit limit", ErrDataTooLarge, len(ndefData))
 	}
 
 	return nil
@@ -620,7 +621,8 @@ func (*FeliCaTag) validateDataSize(ndefData []byte, maxBytes uint32) error {
 func (f *FeliCaTag) writeNDEFBlocks(ctx context.Context, paddedData []byte) error {
 	blocksToWrite := len(paddedData) / feliCaBlockSize
 	if blocksToWrite > 0xFFFE {
-		return fmt.Errorf("NDEF data too large: requires %d blocks but maximum is %d", blocksToWrite, 0xFFFE)
+		return fmt.Errorf("%w: NDEF data too large: requires %d blocks but maximum is %d",
+			ErrDataTooLarge, blocksToWrite, 0xFFFE)
 	}
 
 	for block := range blocksToWrite {

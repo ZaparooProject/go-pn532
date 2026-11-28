@@ -942,7 +942,7 @@ func (t *MIFARETag) validateNDEFSize(data []byte) error {
 	maxDataSize := dataBlocks * mifareBlockSize
 
 	if len(data) > maxDataSize {
-		return fmt.Errorf("NDEF message too large: %d bytes, max %d bytes", len(data), maxDataSize)
+		return fmt.Errorf("%w: NDEF message too large: %d bytes, max %d bytes", ErrDataTooLarge, len(data), maxDataSize)
 	}
 	return nil
 }
