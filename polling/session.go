@@ -39,20 +39,30 @@ const writeStabilizationDelay = 75 * time.Millisecond
 
 // Session handles continuous card monitoring with state machine
 type Session struct {
+	// pollStartedAt is when the poll in progress began, or zero between
+	// polls. lastMissAt is when a poll last finished without finding a tag.
+	// noReplyCheckedAt is when the removal timer last checked the poll in
+	// progress, and noReplyWaited how long that poll has gone unanswered
+	// while the session was running normally. All four are guarded by
+	// stateMutex.
+	pollStartedAt        time.Time
+	lastMissAt           time.Time
+	noReplyCheckedAt     time.Time
 	lastPollTime         time.Time
 	recoverer            DeviceRecoverer
-	device               *pn532.Device
+	config               *Config
+	OnCardDetected       func(ctx context.Context, tag *pn532.DetectedTag) error
 	OnSleepDetected      func()
 	OnDeviceDisconnected func(err error)
 	pauseChan            chan struct{}
 	resumeChan           chan struct{}
 	ackChan              chan struct{}
-	config               *Config
-	OnCardChanged        func(ctx context.Context, tag *pn532.DetectedTag) error
-	OnCardDetected       func(ctx context.Context, tag *pn532.DetectedTag) error
-	OnCardRemoved        func()
 	OnFeliCaUnavailable  func(err error)
+	OnCardChanged        func(ctx context.Context, tag *pn532.DetectedTag) error
+	device               *pn532.Device
+	OnCardRemoved        func()
 	state                CardState
+	noReplyWaited        time.Duration
 	stateMutex           syncutil.RWMutex
 	writeMutex           syncutil.Mutex
 	feliCaFailures       atomic.Int32
@@ -765,6 +775,40 @@ func (s *Session) performSinglePoll(ctx context.Context) (*pn532.DetectedTag, er
 	if s.feliCaRetriesPending.Load() {
 		s.restoreFeliCaRetries(ctx)
 	}
+
+	s.stateMutex.Lock()
+	s.pollStartedAt = time.Now()
+	s.noReplyCheckedAt = s.pollStartedAt
+	s.noReplyWaited = 0
+	s.stateMutex.Unlock()
+
+	tag, err := s.pollTarget(ctx)
+
+	s.stateMutex.Lock()
+	s.pollStartedAt = time.Time{}
+	// Only a reader reply that found no tag shows the card has gone. A poll
+	// that timed out, as it can while the host stalls, or failed with the
+	// reader gone, says nothing about the card.
+	if err == nil && tag == nil {
+		s.lastMissAt = time.Now()
+	}
+	s.stateMutex.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if a tag was found
+	if tag == nil {
+		return nil, ErrNoTagInPoll // No tag detected, but not an error
+	}
+
+	return tag, nil
+}
+
+// pollTarget sends the ISO14443A poll, then the FeliCa poll if that found
+// nothing and FeliCa is on.
+func (s *Session) pollTarget(ctx context.Context) (*pn532.DetectedTag, error) {
 	tag, err := s.device.InListPassiveTarget(ctx, 0x00)
 	if err != nil {
 		return nil, fmt.Errorf("tag detection failed: %w", err)
@@ -773,12 +817,6 @@ func (s *Session) performSinglePoll(ctx context.Context) (*pn532.DetectedTag, er
 	if tag == nil && s.config.FeliCa && !s.feliCaOff.Load() && !s.feliCaRetriesPending.Load() {
 		tag = s.pollFeliCa(ctx)
 	}
-
-	// Check if a tag was found
-	if tag == nil {
-		return nil, ErrNoTagInPoll // No tag detected, but not an error
-	}
-
 	return tag, nil
 }
 
@@ -854,6 +892,98 @@ func (s *Session) handlePollingError(err error) {
 	s.handleCardRemoval()
 }
 
+const (
+	// removalRecheckInterval is how often the removal timer looks again
+	// while it waits for a poll to answer or miss the card.
+	removalRecheckInterval = 100 * time.Millisecond
+
+	// removalStallTolerance is how late the removal timer may fire before
+	// the wait is taken as a stall. A stalled process may have the poll's
+	// answer waiting unread, so the stalled time does not count as the
+	// poll going unanswered.
+	removalStallTolerance = 50 * time.Millisecond
+)
+
+// armRemovalTimer arms the card removal timer through arm, which must start
+// it with the callback it is given. Must be called with stateMutex held.
+func (s *Session) armRemovalTimer(arm func(callback func())) {
+	seq := new(uint64)
+	arm(func() { s.onRemovalTimer(seq) })
+	*seq = s.state.removalSeq
+}
+
+// onRemovalTimer runs when the card removal timer fires. The card is only
+// reported removed when a poll since it was last seen missed it, or has gone
+// unanswered for CardRemovalTimeout while the session was running normally.
+// A poll with no card present blocks until the hardware retries run out,
+// which takes seconds, so the timer does not wait for it to finish.
+// Otherwise the timer is armed again: when polling falls behind because the
+// system is busy, a late timer must not remove a card still on the reader.
+func (s *Session) onRemovalTimer(seq *uint64) {
+	if s.closed.Load() {
+		return
+	}
+
+	s.stateMutex.Lock()
+	if *seq != s.state.removalSeq || !s.state.CanStartRemovalTimer() {
+		s.stateMutex.Unlock()
+		return
+	}
+
+	removed := s.cardMissed(time.Now())
+	if !removed {
+		pn532.Debugf("onRemovalTimer: card not missed yet, unanswered for %v", s.noReplyWaited)
+		s.armRemovalTimer(func(callback func()) {
+			s.state.armRemovalTimer(removalRecheckInterval, callback)
+		})
+		s.stateMutex.Unlock()
+		return
+	}
+	// Removed under the same lock as the sequence check: a poll that reads
+	// the card again re-arms the timer, and must not lose the card to this
+	// timer once it has.
+	onRemoved := s.removeCardLocked()
+	s.stateMutex.Unlock()
+
+	notifyCardRemoved(onRemoved)
+}
+
+// cardMissed reports whether polling has shown the card is gone. Must be
+// called with stateMutex held.
+func (s *Session) cardMissed(now time.Time) bool {
+	lastSeen := s.state.LastSeenTime
+	if s.lastMissAt.After(lastSeen) {
+		return true
+	}
+
+	started := s.pollStartedAt
+	if started.IsZero() || !started.After(lastSeen) {
+		// No poll since the card was seen.
+		return false
+	}
+
+	if s.device != nil && !s.device.LastTargetReply().Before(started) {
+		// The reader answered; the answer is still being handled.
+		return false
+	}
+
+	// Only the time since this timer was armed is known to have passed
+	// without a stall: it fired on time. A stall can land between an
+	// earlier check and the timer being armed again.
+	since := s.noReplyCheckedAt
+	if armed := s.state.removalArmedAt; armed.After(since) {
+		since = armed
+	}
+	s.noReplyCheckedAt = now
+	if now.Sub(s.state.removalDue) > removalStallTolerance {
+		pn532.Debugf("cardMissed: removal timer fired %v late, not counting the wait",
+			now.Sub(s.state.removalDue))
+		return false
+	}
+	s.noReplyWaited += now.Sub(since)
+	return s.noReplyWaited >= s.config.CardRemovalTimeout
+}
+
 // handleCardRemoval handles card removal state changes
 func (s *Session) handleCardRemoval() {
 	// Bail out if session is closed to prevent timer callbacks from executing after cleanup
@@ -862,24 +992,34 @@ func (s *Session) handleCardRemoval() {
 	}
 
 	s.stateMutex.Lock()
+	onRemoved := s.removeCardLocked()
+	s.stateMutex.Unlock()
+
+	notifyCardRemoved(onRemoved)
+}
+
+// removeCardLocked marks the card gone. It returns the callback to tell, or
+// nil when no card was present. Must be called with stateMutex held.
+func (s *Session) removeCardLocked() func() {
 	// If we're in reading state, a new poll cycle is actively processing - ignore stale timer
 	// This handles the edge case where timer.Stop() returned false (callback already spawned)
 	// but the callback runs after TransitionToReading() released the lock
 	if s.state.DetectionState == StateReading {
 		pn532.Debugf("handleCardRemoval: in reading state, bailing out")
-		s.stateMutex.Unlock()
-		return
+		return nil
 	}
 	pn532.Debugf("handleCardRemoval: state=%v, present=%v", s.state.DetectionState, s.state.Present)
-	wasPresent := s.state.Present
-	if wasPresent {
-		s.state.TransitionToIdle()
+	if !s.state.Present {
+		return nil
 	}
-	onRemoved := s.OnCardRemoved
-	s.stateMutex.Unlock()
+	s.state.TransitionToIdle()
+	return s.OnCardRemoved
+}
 
-	// Call callback outside the lock to avoid potential deadlocks
-	if wasPresent && onRemoved != nil {
+// notifyCardRemoved calls onRemoved, if set. It must be called without
+// stateMutex held to avoid potential deadlocks.
+func notifyCardRemoved(onRemoved func()) {
+	if onRemoved != nil {
 		pn532.Debugf("handleCardRemoval: calling OnCardRemoved callback")
 		onRemoved()
 	}
@@ -919,8 +1059,8 @@ func (s *Session) processPollingResults(ctx context.Context, detectedTag *pn532.
 	} else {
 		// Card unchanged and already tested - just reset the removal timer
 		s.stateMutex.Lock()
-		s.state.TransitionToDetected(s.config.CardRemovalTimeout, func() {
-			s.handleCardRemoval()
+		s.armRemovalTimer(func(callback func()) {
+			s.state.TransitionToDetected(s.config.CardRemovalTimeout, callback)
 		})
 		s.stateMutex.Unlock()
 	}
@@ -1052,7 +1192,7 @@ func (s *Session) testAndRecordCard(detectedTag *pn532.DetectedTag) {
 	s.state.TestedUID = detectedTag.UID
 
 	// Transition to post-read grace period with shorter timeout
-	s.state.TransitionToPostReadGrace(s.config.CardRemovalTimeout, func() {
-		s.handleCardRemoval()
+	s.armRemovalTimer(func(callback func()) {
+		s.state.TransitionToPostReadGrace(s.config.CardRemovalTimeout, callback)
 	})
 }

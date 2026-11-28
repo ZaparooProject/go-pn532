@@ -872,6 +872,7 @@ func (d *Device) executeInListPassiveTarget(ctx context.Context, data []byte) ([
 		Debugf("executeInListPassiveTarget: SendCommand failed: %v", err)
 		return nil, fmt.Errorf("failed to send InListPassiveTarget command: %w", err)
 	}
+	d.lastTargetReply.Store(time.Now().UnixNano())
 	Debugf("executeInListPassiveTarget: SendCommand succeeded, result len=%d", len(result))
 	return result, nil
 }

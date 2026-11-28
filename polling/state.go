@@ -34,15 +34,23 @@ const (
 
 // CardState tracks the state of a card on a reader
 type CardState struct {
-	LastSeenTime              time.Time
-	ReadStartTime             time.Time
+	LastSeenTime  time.Time
+	ReadStartTime time.Time
+	// removalArmedAt and removalDue are when the removal timer was armed
+	// and when it is due to fire.
+	removalArmedAt            time.Time
+	removalDue                time.Time
 	RemovalTimer              *time.Timer
 	LastUID                   string
 	LastType                  string
 	TestedUID                 string
 	DetectionState            CardDetectionState
 	ConsecutiveStableFailures int
-	Present                   bool
+	// removalSeq identifies the armed removal timer. It changes whenever
+	// the timer is armed or stopped, so a callback from a replaced timer
+	// can tell it is stale.
+	removalSeq uint64
+	Present    bool
 }
 
 // ErrNoTagInPoll indicates no tag was detected during polling (not an error condition)
@@ -70,26 +78,42 @@ func safeTimerStop(timer *time.Timer) {
 func (cs *CardState) TransitionToReading() {
 	cs.DetectionState = StateReading
 	cs.ReadStartTime = time.Now()
-	safeTimerStop(cs.RemovalTimer)
-	cs.RemovalTimer = nil
+	cs.stopRemovalTimer()
 }
 
 // TransitionToPostReadGrace moves to post-read grace period with short timeout
 func (cs *CardState) TransitionToPostReadGrace(timeout time.Duration, callback func()) {
 	cs.DetectionState = StatePostReadGrace
-	safeTimerStop(cs.RemovalTimer)
+	cs.LastSeenTime = time.Now()
 	// Short grace period after read completion
 	pn532.Debugf("TransitionToPostReadGrace: starting timer for %v", timeout/2)
-	cs.RemovalTimer = time.AfterFunc(timeout/2, callback)
+	cs.armRemovalTimer(timeout/2, callback)
 }
 
 // TransitionToDetected moves to tag detected state with normal removal timeout
 func (cs *CardState) TransitionToDetected(timeout time.Duration, callback func()) {
 	cs.DetectionState = StateTagDetected
 	cs.LastSeenTime = time.Now()
-	safeTimerStop(cs.RemovalTimer)
 	pn532.Debugf("TransitionToDetected: starting timer for %v", timeout)
+	cs.armRemovalTimer(timeout, callback)
+}
+
+// armRemovalTimer replaces the removal timer with one that runs callback
+// after timeout.
+func (cs *CardState) armRemovalTimer(timeout time.Duration, callback func()) {
+	cs.stopRemovalTimer()
+	cs.removalSeq++
+	cs.removalArmedAt = time.Now()
+	cs.removalDue = cs.removalArmedAt.Add(timeout)
 	cs.RemovalTimer = time.AfterFunc(timeout, callback)
+}
+
+// stopRemovalTimer stops the removal timer and marks any callback it
+// already started as stale.
+func (cs *CardState) stopRemovalTimer() {
+	safeTimerStop(cs.RemovalTimer)
+	cs.RemovalTimer = nil
+	cs.removalSeq++
 }
 
 // TransitionToIdle resets to idle state
@@ -102,8 +126,7 @@ func (cs *CardState) TransitionToIdle() {
 	cs.ConsecutiveStableFailures = 0
 	cs.LastSeenTime = time.Time{}
 	cs.ReadStartTime = time.Time{}
-	safeTimerStop(cs.RemovalTimer)
-	cs.RemovalTimer = nil
+	cs.stopRemovalTimer()
 }
 
 // CanStartRemovalTimer returns true if the state allows removal timer to run
