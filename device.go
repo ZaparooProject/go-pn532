@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZaparooProject/go-pn532/detection"
@@ -66,6 +67,20 @@ type Device struct {
 	transport       Transport
 	config          *DeviceConfig
 	firmwareVersion *FirmwareVersion
+	// lastTargetReply is when the last InListPassiveTarget reply arrived,
+	// in Unix nanoseconds.
+	lastTargetReply atomic.Int64
+}
+
+// LastTargetReply returns when the reader last answered an
+// InListPassiveTarget command, or the zero time if it never has. It is
+// recorded as soon as the reply arrives, before it is parsed.
+func (d *Device) LastTargetReply() time.Time {
+	ns := d.lastTargetReply.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // hasCapability checks if the transport has the specified capability
