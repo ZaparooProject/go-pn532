@@ -654,7 +654,7 @@ func TestFeliCaTag_ValidateDataSize(t *testing.T) {
 			err := tag.validateDataSize(tt.data, tt.maxBytes)
 
 			if tt.expectError {
-				require.Error(t, err)
+				require.ErrorIs(t, err, ErrDataTooLarge)
 			} else {
 				require.NoError(t, err)
 			}

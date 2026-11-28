@@ -16,6 +16,7 @@
 package pn532
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -215,13 +216,13 @@ func TestCalculateNDEFHeaderErrors(t *testing.T) {
 			name:        "payload too large",
 			payloadSize: 65536,
 			wantError:   true,
-			errorMsg:    "NDEF payload too large",
+			errorMsg:    "data too large: NDEF payload too large",
 		},
 		{
 			name:        "way too large payload",
 			payloadSize: 100000,
 			wantError:   true,
-			errorMsg:    "NDEF payload too large",
+			errorMsg:    "data too large: NDEF payload too large",
 		},
 		{
 			name:        "valid max size",
@@ -243,6 +244,9 @@ func TestCalculateNDEFHeaderErrors(t *testing.T) {
 
 			if tt.wantError && err != nil && err.Error() != tt.errorMsg {
 				t.Errorf("calculateNDEFHeader() error = %q, want %q", err.Error(), tt.errorMsg)
+			}
+			if tt.wantError && !errors.Is(err, ErrDataTooLarge) {
+				t.Errorf("calculateNDEFHeader() error = %v, want ErrDataTooLarge", err)
 			}
 		})
 	}

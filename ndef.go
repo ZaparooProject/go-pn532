@@ -18,6 +18,7 @@ package pn532
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 // NDEFRecordType represents the type of an NDEF record
@@ -80,7 +81,7 @@ func calculateNDEFHeader(payload []byte) ([]byte, error) {
 	// Long format (length >= 255)
 	// NFCForum-TS-Type-2-Tag_1.1.pdf Page 9
 	if length > 0xFFFF {
-		return nil, errors.New("NDEF payload too large")
+		return nil, fmt.Errorf("%w: NDEF payload too large", ErrDataTooLarge)
 	}
 
 	header := make([]byte, 4)

@@ -907,7 +907,8 @@ func (t *NTAGTag) validateAndGetMemoryRange(ctx context.Context, data []byte) (u
 	}
 
 	if len(data) > maxBytes {
-		return 0, 0, fmt.Errorf("NDEF message too large: %d bytes, max %d bytes for tag type", len(data), maxBytes)
+		return 0, 0, fmt.Errorf("%w: NDEF message too large: %d bytes, max %d bytes for tag type",
+			ErrDataTooLarge, len(data), maxBytes)
 	}
 
 	return userStart, userEnd, nil

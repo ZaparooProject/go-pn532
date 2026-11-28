@@ -275,3 +275,19 @@ func TestNTAGTag_WriteNDEF_CapabilityContainerWriteFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to write capability container")
 }
+
+// A message that does not fit is reported as ErrDataTooLarge, so callers can
+// tell the user the text is too big rather than that the write failed. Nothing
+// is written.
+func TestNTAGTag_WriteNDEF_TooLarge(t *testing.T) {
+	t.Parallel()
+	device, transport := newMemoryNTAGDevice(t, ntag215TotalPages)
+	tag := NewNTAGTag(device, ntagTestUID, 0)
+	tag.tagType = NTAGType215
+
+	err := tag.WriteNDEF(context.Background(), textMessage(string(make([]byte, 600))))
+
+	require.ErrorIs(t, err, ErrDataTooLarge)
+	assert.False(t, IsRetryable(err))
+	assert.False(t, transport.wrotePage(ntagPageCC))
+}
