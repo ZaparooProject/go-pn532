@@ -786,7 +786,10 @@ func (s *Session) performSinglePoll(ctx context.Context) (*pn532.DetectedTag, er
 
 	s.stateMutex.Lock()
 	s.pollStartedAt = time.Time{}
-	if err != nil || tag == nil {
+	// Only a reader reply that found no tag shows the card has gone. A poll
+	// that timed out, as it can while the host stalls, or failed with the
+	// reader gone, says nothing about the card.
+	if err == nil && tag == nil {
 		s.lastMissAt = time.Now()
 	}
 	s.stateMutex.Unlock()
@@ -936,9 +939,13 @@ func (s *Session) onRemovalTimer(seq *uint64) {
 		s.stateMutex.Unlock()
 		return
 	}
+	// Removed under the same lock as the sequence check: a poll that reads
+	// the card again re-arms the timer, and must not lose the card to this
+	// timer once it has.
+	onRemoved := s.removeCardLocked()
 	s.stateMutex.Unlock()
 
-	s.handleCardRemoval()
+	notifyCardRemoved(onRemoved)
 }
 
 // cardMissed reports whether polling has shown the card is gone. Must be
@@ -985,24 +992,34 @@ func (s *Session) handleCardRemoval() {
 	}
 
 	s.stateMutex.Lock()
+	onRemoved := s.removeCardLocked()
+	s.stateMutex.Unlock()
+
+	notifyCardRemoved(onRemoved)
+}
+
+// removeCardLocked marks the card gone. It returns the callback to tell, or
+// nil when no card was present. Must be called with stateMutex held.
+func (s *Session) removeCardLocked() func() {
 	// If we're in reading state, a new poll cycle is actively processing - ignore stale timer
 	// This handles the edge case where timer.Stop() returned false (callback already spawned)
 	// but the callback runs after TransitionToReading() released the lock
 	if s.state.DetectionState == StateReading {
 		pn532.Debugf("handleCardRemoval: in reading state, bailing out")
-		s.stateMutex.Unlock()
-		return
+		return nil
 	}
 	pn532.Debugf("handleCardRemoval: state=%v, present=%v", s.state.DetectionState, s.state.Present)
-	wasPresent := s.state.Present
-	if wasPresent {
-		s.state.TransitionToIdle()
+	if !s.state.Present {
+		return nil
 	}
-	onRemoved := s.OnCardRemoved
-	s.stateMutex.Unlock()
+	s.state.TransitionToIdle()
+	return s.OnCardRemoved
+}
 
-	// Call callback outside the lock to avoid potential deadlocks
-	if wasPresent && onRemoved != nil {
+// notifyCardRemoved calls onRemoved, if set. It must be called without
+// stateMutex held to avoid potential deadlocks.
+func notifyCardRemoved(onRemoved func()) {
+	if onRemoved != nil {
 		pn532.Debugf("handleCardRemoval: calling OnCardRemoved callback")
 		onRemoved()
 	}

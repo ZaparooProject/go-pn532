@@ -349,3 +349,44 @@ func TestSession_RemovalTimerIgnored(t *testing.T) {
 		assert.Same(t, timer, session.state.RemovalTimer, "stale callback must not re-arm")
 	})
 }
+
+// A poll that ends in an error says nothing about the card: a host stall can
+// expire the poll's deadline, and a reader that has gone away cannot see the
+// card either way. Neither may count as the card having been missed.
+func TestSession_PollErrorIsNotAMiss(t *testing.T) {
+	t.Parallel()
+
+	for name, pollErr := range map[string]error{
+		"poll deadline expired": context.DeadlineExceeded,
+		"reader gone":           pn532.ErrTransportClosed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			session, removed := sessionWithSeenCard(t, time.Now().Add(-time.Second))
+			transport, ok := session.device.Transport().(*pn532.MockTransport)
+			require.True(t, ok)
+			transport.SetError(0x4A, pollErr)
+
+			_, err := session.performSinglePoll(context.Background())
+			require.ErrorIs(t, err, pollErr)
+
+			fireRemovalTimer(session, time.Second, 0)
+			assert.Zero(t, removed.Load(), "a failed poll was taken as the card missing")
+		})
+	}
+}
+
+// A poll the reader answers with no tag is the card going.
+func TestSession_PollWithNoTagIsAMiss(t *testing.T) {
+	t.Parallel()
+	session, removed := sessionWithSeenCard(t, time.Now().Add(-time.Second))
+	transport, ok := session.device.Transport().(*pn532.MockTransport)
+	require.True(t, ok)
+	transport.SetResponse(0x4A, []byte{0xD5, 0x4B, 0x00})
+
+	_, err := session.performSinglePoll(context.Background())
+	require.ErrorIs(t, err, ErrNoTagInPoll)
+
+	fireRemovalTimer(session, time.Second, 0)
+	assert.Equal(t, int32(1), removed.Load())
+}
